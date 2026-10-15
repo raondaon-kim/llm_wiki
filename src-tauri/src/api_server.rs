@@ -249,6 +249,10 @@ fn handle_request(
         .filter(|part| !part.is_empty())
         .collect();
 
+    if let Some(action) = app_action(method, &parts) {
+        return run_app_action(app, action);
+    }
+
     match (method, parts.as_slice()) {
         (&Method::Get, ["projects"]) => handle_projects(app),
         (&Method::Get, ["projects", project_id, "files"]) => handle_files(app, project_id, query),
@@ -265,6 +269,44 @@ fn handle_request(
             err(501, "Chat API is not implemented in the local Rust API server yet. The existing chat/RAG pipeline currently lives in the WebView; expose it after moving the shared chat pipeline behind a backend command.")
         }
         _ => err(404, "Not found"),
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum AppAction {
+    Show,
+    Quit,
+}
+
+/// The routes that control the app itself; GenOffice calls them.
+fn app_action(method: &Method, parts: &[&str]) -> Option<AppAction> {
+    match (method, parts) {
+        (&Method::Post, ["app", "show"]) => Some(AppAction::Show),
+        (&Method::Post, ["app", "quit"]) => Some(AppAction::Quit),
+        _ => None,
+    }
+}
+
+fn run_app_action(app: &AppHandle, action: AppAction) -> ApiResponse {
+    match action {
+        AppAction::Show => match app.get_webview_window("main") {
+            Some(window) => {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+                ok(json!({ "ok": true }))
+            }
+            None => err(404, "main window not found"),
+        },
+        AppAction::Quit => {
+            let handle = app.clone();
+            // answer first so the caller gets its response, then exit
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(300));
+                handle.exit(0);
+            });
+            ok(json!({ "ok": true }))
+        }
     }
 }
 
@@ -1249,6 +1291,15 @@ mod tests {
         let content = "前言。这里是关于知识图谱过滤的中文内容。后续说明。";
         let snippet = commands::search::build_snippet(content, "知识图谱");
         assert!(snippet.contains("知识图谱"));
+    }
+
+    #[test]
+    fn only_post_app_show_and_app_quit_are_app_actions() {
+        assert_eq!(app_action(&Method::Post, &["app", "show"]), Some(AppAction::Show));
+        assert_eq!(app_action(&Method::Post, &["app", "quit"]), Some(AppAction::Quit));
+        assert_eq!(app_action(&Method::Get, &["app", "quit"]), None);
+        assert_eq!(app_action(&Method::Post, &["app", "other"]), None);
+        assert_eq!(app_action(&Method::Post, &["projects"]), None);
     }
 
     #[test]
