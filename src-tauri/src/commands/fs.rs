@@ -450,6 +450,33 @@ fn extract_pdf_text(path: &str) -> Result<String, String> {
     Ok(result)
 }
 
+const DEFAULT_TESSERACT_DIR: &str = r"C:\Program Files\Tesseract-OCR";
+
+/// Tesseract folder for ocrmypdf's PATH: TESSERACT_DIR when set, else the default Windows
+/// install when it exists.
+fn tesseract_dir_from(env_value: Option<&str>, exists: impl Fn(&str) -> bool) -> Option<String> {
+    if let Some(v) = env_value.map(str::trim).filter(|v| !v.is_empty()) {
+        return Some(v.to_string());
+    }
+    exists(DEFAULT_TESSERACT_DIR).then(|| DEFAULT_TESSERACT_DIR.to_string())
+}
+
+fn tesseract_dir() -> Option<String> {
+    tesseract_dir_from(std::env::var("TESSERACT_DIR").ok().as_deref(), |p| {
+        Path::new(p).exists()
+    })
+}
+
+/// Run helper tools without a console window flashing up (Windows only).
+fn hide_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// Run OCRmyPDF on `input_pdf` and write a searchable PDF to a temp file.
 /// Returns the temp file path on success. The caller is responsible for
 /// deleting it when done.
@@ -474,34 +501,23 @@ fn run_ocrmypdf(input_pdf: &str, lang: &str) -> Result<String, String> {
     // Remove any leftover from a previous failed run.
     let _ = std::fs::remove_file(&ocr_output);
 
-    // Locate ocrmypdf: prefer the known user-scripts path, then fall
-    // back to PATH.
-    let ocrmypdf_candidates = [
-        r"C:\Users\김용현\AppData\Roaming\Python\Python313\Scripts\ocrmypdf.exe",
-        "ocrmypdf",
-    ];
-    let ocrmypdf_bin = ocrmypdf_candidates
-        .iter()
-        .find(|c| {
-            if c.contains('\\') || c.contains('/') {
-                Path::new(c).exists()
-            } else {
-                which::which(c).is_ok()
-            }
-        })
-        .copied()
-        .ok_or_else(|| "ocrmypdf not found. Install with: pip install ocrmypdf".to_string())?;
+    // Locate ocrmypdf on PATH.
+    let ocrmypdf_bin = which::which("ocrmypdf")
+        .map_err(|_| "ocrmypdf not found. Install with: pip install ocrmypdf".to_string())?;
 
-    // Set Tesseract PATH so ocrmypdf can find it.
-    let tesseract_dir = r"C:\Program Files\Tesseract-OCR";
+    // Tesseract's folder goes in front of PATH so ocrmypdf can find it (TESSERACT_DIR, else the
+    // default Windows install when it exists).
+    let path_env = match tesseract_dir() {
+        Some(dir) => format!("{dir};{}", std::env::var("PATH").unwrap_or_default()),
+        None => std::env::var("PATH").unwrap_or_default(),
+    };
 
-    eprintln!("[run_ocrmypdf] running: {ocrmypdf_bin} -l {lang} --force-ocr '{input_pdf}' '{ocr_output_str}'");
+    eprintln!("[run_ocrmypdf] running: {} -l {lang} --force-ocr '{input_pdf}' '{ocr_output_str}'", ocrmypdf_bin.display());
 
-    let output = Command::new(ocrmypdf_bin)
-        .env("PATH", format!(
-            "{tesseract_dir};{}",
-            std::env::var("PATH").unwrap_or_default()
-        ))
+    let mut cmd = Command::new(&ocrmypdf_bin);
+    hide_console(&mut cmd);
+    let output = cmd
+        .env("PATH", path_env)
         .args([
             "-l", lang,
             "--force-ocr",          // OCR even if the PDF has some text
@@ -580,7 +596,9 @@ fn run_pymupdf_extract(pdf_path: &str) -> Result<String, String> {
         script_path.display()
     );
 
-    let output = Command::new(python_bin)
+    let mut cmd = Command::new(python_bin);
+    hide_console(&mut cmd);
+    let output = cmd
         .args([script_path.to_string_lossy().as_ref(), pdf_path])
         .output()
         .map_err(|e| format!("Failed to launch python: {e}"))?;
@@ -2280,5 +2298,23 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&dest);
+    }
+}
+
+#[cfg(test)]
+mod ocr_tool_tests {
+    use super::*;
+
+    #[test]
+    fn tesseract_dir_prefers_the_env_value_then_the_default_install() {
+        assert_eq!(
+            tesseract_dir_from(Some("D:/tools/tess"), |_| false),
+            Some("D:/tools/tess".to_string())
+        );
+        assert_eq!(
+            tesseract_dir_from(Some("  "), |p| p == r"C:\Program Files\Tesseract-OCR"),
+            Some(r"C:\Program Files\Tesseract-OCR".to_string())
+        );
+        assert_eq!(tesseract_dir_from(None, |_| false), None);
     }
 }
