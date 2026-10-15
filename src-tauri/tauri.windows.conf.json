@@ -1,5 +1,8 @@
 {
   "bundle": {
-    "resources": ["pdfium/pdfium.dll"]
+    "resources": [
+      "pdfium/pdfium.dll",
+      "scripts/extract_pdf.py"
+    ]
   }
 }

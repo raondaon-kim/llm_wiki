@@ -112,6 +112,7 @@ pub fn run() {
             commands::fs::get_file_size,
             commands::fs::get_file_md5,
             commands::fs::read_file_as_base64,
+            commands::fs::ocr_pdf_cmd,
             commands::project::create_project,
             commands::project::open_project,
             commands::project::open_project_folder,

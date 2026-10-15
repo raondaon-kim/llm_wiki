@@ -357,29 +357,265 @@ fn extract_pdf_text(path: &str) -> Result<String, String> {
         None
     };
 
+    // Helper: check if extracted text looks like a scanned/image-only
+    // PDF. Counts non-whitespace chars excluding `## Page N` headers;
+    // if the average per page is below 50 the PDF is almost certainly
+    // image-only.
+    let is_scanned = |text: &str| -> bool {
+        let page_count = text.matches("## Page ").count().max(1);
+        let content_chars = text
+            .lines()
+            .filter(|l| !l.starts_with("## Page "))
+            .map(|l| l.chars().filter(|c| !c.is_whitespace()).count())
+            .sum::<usize>();
+        let avg = content_chars / page_count;
+        avg < 50
+    };
+
+    // Helper: full extraction (text + images saved to media_dest).
+    let extract_full =
+        |src_path: &str, media_dest: Option<&std::path::Path>, url_prefix: &str| -> Result<String, String> {
+            extract_pdf_markdown(src_path, media_dest, url_prefix, &ExtractOptions::default())
+        };
+
     if let Some(root) = project_root {
         if !stem.is_empty() {
             let media_dir = root.join("wiki").join("media").join(&stem);
-            // Forward-slash absolute path so we don't ship `\` into
-            // markdown that the JS-side resolver would then have to
-            // re-normalize. The resolver does handle backslashes,
-            // but emitting clean URLs in the first place avoids
-            // surprises in cache files we save to disk.
             let url_prefix = media_dir.to_string_lossy().replace('\\', "/");
-            return extract_pdf_markdown(
-                path,
-                Some(&media_dir),
-                &url_prefix,
-                &ExtractOptions::default(),
+
+            // Step 1: fast probe — text only, no image I/O.
+            // This is cheap: pdfium reads the text stream, skips all
+            // image objects because media_dest_dir is None.
+            let probe = extract_pdf_markdown(path, None, "", &ExtractOptions::default())?;
+
+            if !is_scanned(&probe) {
+                // Normal text PDF — do the full extraction (text + images).
+                return extract_full(path, Some(&media_dir), &url_prefix);
+            }
+
+            // Scanned/broken-font PDF detected.
+            // Strategy:
+            //   1. Try pymupdf first — handles broken ToUnicode font mappings
+            //      (common in Korean PDFs) without any OCR overhead.
+            //   2. If pymupdf also returns sparse text, fall back to OCRmyPDF
+            //      for truly image-only (scanned) PDFs.
+            eprintln!(
+                "[extract_pdf_text] sparse text detected — trying pymupdf on '{path}'"
             );
+            if let Ok(mupdf_text) = run_pymupdf_extract(path) {
+                if !is_scanned(&mupdf_text) {
+                    // pymupdf recovered the text (broken-font case).
+                    // Text is sufficient for LLM ingest — skip image extraction.
+                    eprintln!("[extract_pdf_text] pymupdf recovered text — skipping OCR and image extraction");
+                    return Ok(mupdf_text);
+                }
+                eprintln!("[extract_pdf_text] pymupdf also sparse — falling back to OCRmyPDF");
+            } else {
+                eprintln!("[extract_pdf_text] pymupdf failed — falling back to OCRmyPDF");
+            }
+            // True scanned PDF — run OCR, then extract from the OCR'd copy.
+            eprintln!("[extract_pdf_text] running OCRmyPDF on '{path}'");
+            let ocr_path = run_ocrmypdf(path, "kor+eng")?;
+            let result = extract_full(&ocr_path, Some(&media_dir), &url_prefix);
+            let _ = std::fs::remove_file(&ocr_path);
+            return result;
         }
     }
 
-    // PDFs not under <project>/raw/sources/ — text-only fallback.
-    // Skip the image side of the extraction entirely (no media
-    // destination → extract_pdf_markdown only writes text + page
-    // headers, no pdfium image-object enumeration).
-    extract_pdf_markdown(path, None, "", &ExtractOptions::default())
+    // PDFs not under <project>/raw/sources/ — text-only, no image saving.
+    // No need for the two-pass probe here since there's no media_dir anyway.
+    let probe = extract_pdf_markdown(path, None, "", &ExtractOptions::default())?;
+    if !is_scanned(&probe) {
+        return Ok(probe);
+    }
+    // Sparse text — try pymupdf before OCR.
+    eprintln!("[extract_pdf_text] sparse text detected — trying pymupdf on '{path}'");
+    if let Ok(mupdf_text) = run_pymupdf_extract(path) {
+        if !is_scanned(&mupdf_text) {
+            eprintln!("[extract_pdf_text] pymupdf recovered text — skipping OCR");
+            return Ok(mupdf_text);
+        }
+        eprintln!("[extract_pdf_text] pymupdf also sparse — falling back to OCRmyPDF");
+    } else {
+        eprintln!("[extract_pdf_text] pymupdf failed — falling back to OCRmyPDF");
+    }
+    eprintln!("[extract_pdf_text] running OCRmyPDF on '{path}'");
+    let ocr_path = run_ocrmypdf(path, "kor+eng")?;
+    let result = extract_pdf_markdown(&ocr_path, None, "", &ExtractOptions::default())
+        .unwrap_or_else(|e| {
+            eprintln!("[extract_pdf_text] OCR re-extract failed: {e}");
+            probe.clone()
+        });
+    let _ = std::fs::remove_file(&ocr_path);
+    Ok(result)
+}
+
+/// Run OCRmyPDF on `input_pdf` and write a searchable PDF to a temp file.
+/// Returns the temp file path on success. The caller is responsible for
+/// deleting it when done.
+///
+/// `lang` is a Tesseract language tag, e.g. `"kor+eng"` for Korean + English.
+fn run_ocrmypdf(input_pdf: &str, lang: &str) -> Result<String, String> {
+    use std::process::Command;
+
+    // Write to a temp file next to the original so we stay on the same
+    // volume and avoid cross-drive rename issues.
+    let input_path = Path::new(input_pdf);
+    let stem = input_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("ocr");
+    let parent = input_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let ocr_output = parent.join(format!("{stem}.__ocr__.pdf"));
+    let ocr_output_str = ocr_output.to_string_lossy().to_string();
+
+    // Remove any leftover from a previous failed run.
+    let _ = std::fs::remove_file(&ocr_output);
+
+    // Locate ocrmypdf: prefer the known user-scripts path, then fall
+    // back to PATH.
+    let ocrmypdf_candidates = [
+        r"C:\Users\김용현\AppData\Roaming\Python\Python313\Scripts\ocrmypdf.exe",
+        "ocrmypdf",
+    ];
+    let ocrmypdf_bin = ocrmypdf_candidates
+        .iter()
+        .find(|c| {
+            if c.contains('\\') || c.contains('/') {
+                Path::new(c).exists()
+            } else {
+                which::which(c).is_ok()
+            }
+        })
+        .copied()
+        .ok_or_else(|| "ocrmypdf not found. Install with: pip install ocrmypdf".to_string())?;
+
+    // Set Tesseract PATH so ocrmypdf can find it.
+    let tesseract_dir = r"C:\Program Files\Tesseract-OCR";
+
+    eprintln!("[run_ocrmypdf] running: {ocrmypdf_bin} -l {lang} --force-ocr '{input_pdf}' '{ocr_output_str}'");
+
+    let output = Command::new(ocrmypdf_bin)
+        .env("PATH", format!(
+            "{tesseract_dir};{}",
+            std::env::var("PATH").unwrap_or_default()
+        ))
+        .args([
+            "-l", lang,
+            "--force-ocr",          // OCR even if the PDF has some text
+            "--output-type", "pdf", // plain PDF (not pdfa) for speed
+            "--jobs", "2",          // parallelise page processing
+            input_pdf,
+            &ocr_output_str,
+        ])
+        .output()
+        .map_err(|e| format!("Failed to launch ocrmypdf: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "ocrmypdf failed (exit {}): {stderr}\n{stdout}",
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+
+    eprintln!("[run_ocrmypdf] done → '{ocr_output_str}'");
+    Ok(ocr_output_str)
+}
+
+/// Extract text from a PDF using pymupdf (Python fitz).
+///
+/// pymupdf handles broken ToUnicode font mappings that pdfium cannot decode
+/// (common in Korean PDFs exported from HWP or older InDesign). When pdfium
+/// returns near-zero text (avg < 50 chars/page), we try pymupdf first before
+/// falling back to the heavy OCRmyPDF pipeline.
+///
+/// Script lookup order:
+///   1. Tauri resource dir  → scripts/extract_pdf.py  (bundled with the app)
+///   2. src-tauri/scripts/  next to the binary         (dev mode)
+///   3. PATH: `python` / `python3`
+///
+/// Returns the full extracted markdown text on success.
+fn run_pymupdf_extract(pdf_path: &str) -> Result<String, String> {
+    use std::process::Command;
+
+    // Locate extract_pdf.py — bundled resource first, then dev-mode sibling.
+    let script_path = {
+        let candidates: Vec<std::path::PathBuf> = {
+            let mut v = Vec::new();
+            // 1. Tauri resource dir (production bundle)
+            if let Some(res_dir) = RESOURCE_DIR_HINT.get() {
+                v.push(res_dir.join("scripts").join("extract_pdf.py"));
+            }
+            // 2. Next to the executable (dev mode: target/debug/scripts/)
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(exe_dir) = exe.parent() {
+                    v.push(exe_dir.join("scripts").join("extract_pdf.py"));
+                }
+            }
+            // 3. src-tauri/scripts/ relative to CARGO_MANIFEST_DIR (cargo run)
+            if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+                v.push(Path::new(&manifest).join("scripts").join("extract_pdf.py"));
+            }
+            v
+        };
+        candidates
+            .into_iter()
+            .find(|p| p.exists())
+            .ok_or_else(|| "extract_pdf.py not found (checked resource dir, exe dir, manifest dir)".to_string())?
+    };
+
+    // Locate python interpreter.
+    let python_bin = ["python", "python3"]
+        .iter()
+        .find(|p| which::which(p).is_ok())
+        .copied()
+        .ok_or_else(|| "python not found in PATH — install Python 3".to_string())?;
+
+    eprintln!(
+        "[run_pymupdf_extract] {python_bin} '{}' '{pdf_path}'",
+        script_path.display()
+    );
+
+    let output = Command::new(python_bin)
+        .args([script_path.to_string_lossy().as_ref(), pdf_path])
+        .output()
+        .map_err(|e| format!("Failed to launch python: {e}"))?;
+
+    // Log stderr (progress lines from the script) regardless of exit code.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stderr.lines() {
+        eprintln!("{line}");
+    }
+
+    if !output.status.success() {
+        return Err(format!(
+            "extract_pdf.py failed (exit {}): {stderr}",
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    Ok(text)
+}
+
+/// Tauri command: explicitly OCR a PDF and return the searchable PDF path.
+/// Useful for pre-processing scanned PDFs before ingest.
+/// The returned path is a new file next to the original; the caller can
+/// choose to replace the original or keep both.
+#[tauri::command]
+pub async fn ocr_pdf_cmd(path: String, lang: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_guarded("ocr_pdf_cmd", || {
+            let language = lang.as_deref().unwrap_or("kor+eng");
+            run_ocrmypdf(&path, language)
+        })
+    })
+    .await
+    .map_err(|e| format!("ocr_pdf_cmd blocking task join error: {e}"))?
 }
 
 /// Extract text from Office Open XML formats, converting to Markdown.

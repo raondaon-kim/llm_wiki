@@ -529,102 +529,163 @@ async function autoIngestImpl(
     }
   }
 
-  const truncatedContent = enrichedSourceContent.length > 50000
-    ? enrichedSourceContent.slice(0, 50000) + "\n\n[...truncated...]"
-    : enrichedSourceContent
-
-  // ── Step 1: Analysis ──────────────────────────────────────────
-  // LLM reads the source and produces a structured analysis:
-  // key entities, concepts, main arguments, connections to existing wiki, contradictions
-  activity.updateItem(activityId, { detail: "Step 1/2: Analyzing source..." })
-
-  let analysis = ""
-
-  await streamChat(
-    llmConfig,
-    [
-      { role: "system", content: buildAnalysisPrompt(purpose, index, truncatedContent) },
-      { role: "user", content: `Analyze this source document:\n\n**File:** ${fileName}${folderContext ? `\n**Folder context:** ${folderContext}` : ""}\n\n---\n\n${truncatedContent}` },
-    ],
-    {
-      onToken: (token) => { analysis += token },
-      onDone: () => {},
-      onError: (err) => {
-        activity.updateItem(activityId, { status: "error", detail: `Analysis failed: ${err.message}` })
-      },
-    },
-    signal,
-    { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 4096 },
-  )
-
-  // A silent `return []` here would look like success to the queue
-  // runner and cause the task to be filter()'d out. Throw instead so
-  // processNext's catch-block path (retry / mark failed) engages.
-  const analysisActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
-  if (analysisActivity?.status === "error") {
-    throw new Error(analysisActivity.detail || "Analysis stream failed")
+  // ── Chunking: split large documents into 200k-char chunks ────
+  // Each chunk is analyzed + generated independently. writeFileBlocks
+  // merges pages on every chunk write so repeated entities/concepts
+  // accumulate content naturally across chunks.
+  const CHUNK_SIZE = 200000
+  const chunks: string[] = []
+  if (enrichedSourceContent.length <= CHUNK_SIZE) {
+    chunks.push(enrichedSourceContent)
+  } else {
+    // Split on paragraph boundaries to avoid cutting mid-sentence
+    let offset = 0
+    while (offset < enrichedSourceContent.length) {
+      let end = offset + CHUNK_SIZE
+      if (end < enrichedSourceContent.length) {
+        // Walk back to the nearest paragraph break (\n\n)
+        const boundary = enrichedSourceContent.lastIndexOf("\n\n", end)
+        if (boundary > offset + CHUNK_SIZE / 2) end = boundary + 2
+      } else {
+        end = enrichedSourceContent.length
+      }
+      chunks.push(enrichedSourceContent.slice(offset, end))
+      offset = end
+    }
   }
 
-  // ── Step 2: Generation ────────────────────────────────────────
-  // LLM takes the analysis as context and produces wiki files + review items
-  activity.updateItem(activityId, { detail: "Step 2/2: Generating wiki pages..." })
+  const totalChunks = chunks.length
+  console.log(`[ingest:chunk] "${fileName}": ${totalChunks} chunk(s), total ${enrichedSourceContent.length} chars`)
 
-  let generation = ""
+  const allWrittenPaths: string[] = []
+  const allWriteWarnings: string[] = []
+  const allHardFailures: string[] = []
+  let lastGeneration = ""
+  let lastAnalysis = ""
 
-  await streamChat(
-    llmConfig,
-    [
-      { role: "system", content: buildGenerationPrompt(schema, purpose, index, fileName, overview, truncatedContent) },
+  for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+    const chunkContent = chunks[chunkIdx]
+    const chunkLabel = totalChunks > 1 ? ` (chunk ${chunkIdx + 1}/${totalChunks})` : ""
+
+    if (signal?.aborted) break
+
+    // ── Step 1: Analysis ────────────────────────────────────────
+    activity.updateItem(activityId, { detail: `Step 1/2: Analyzing source...${chunkLabel}` })
+
+    let analysis = ""
+
+    await streamChat(
+      llmConfig,
+      [
+        { role: "system", content: buildAnalysisPrompt(purpose, index, chunkContent) },
+        { role: "user", content: `Analyze this source document:\n\n**File:** ${fileName}${folderContext ? `\n**Folder context:** ${folderContext}` : ""}${totalChunks > 1 ? `\n**Part:** ${chunkIdx + 1} of ${totalChunks}` : ""}\n\n---\n\n${chunkContent}` },
+      ],
       {
-        role: "user",
-        content: [
-          `Source document to process: **${fileName}**`,
-          "",
-          "The Stage 1 analysis below is CONTEXT to inform your output. Do NOT echo",
-          "its tables, bullet points, or prose. Your output must be FILE/REVIEW",
-          "blocks as specified in the system prompt — nothing else.",
-          "",
-          "## Stage 1 Analysis (context only — do not repeat)",
-          "",
-          analysis,
-          "",
-          "## Original Source Content",
-          "",
-          truncatedContent,
-          "",
-          "---",
-          "",
-          `Now emit the FILE blocks for the wiki files derived from **${fileName}**.`,
-          "Your response MUST begin with `---FILE:` as the very first characters.",
-          "No preamble. No analysis prose. Start immediately.",
-        ].join("\n"),
+        onToken: (token) => { analysis += token },
+        onDone: () => {},
+        onError: (err) => {
+          activity.updateItem(activityId, { status: "error", detail: `Analysis failed${chunkLabel}: ${err.message}` })
+        },
       },
-    ],
-    {
-      onToken: (token) => { generation += token },
-      onDone: () => {},
-      onError: (err) => {
-        activity.updateItem(activityId, { status: "error", detail: `Generation failed: ${err.message}` })
-      },
-    },
-    signal,
-    { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 8192 },
-  )
+      signal,
+      { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 8192 },
+    )
 
-  const generationActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
-  if (generationActivity?.status === "error") {
-    throw new Error(generationActivity.detail || "Generation stream failed")
+    const analysisActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
+    if (analysisActivity?.status === "error") {
+      throw new Error(analysisActivity.detail || "Analysis stream failed")
+    }
+
+    // ── Step 2: Generation ──────────────────────────────────────
+    activity.updateItem(activityId, { detail: `Step 2/2: Generating wiki pages...${chunkLabel}` })
+
+    let generation = ""
+
+    await streamChat(
+      llmConfig,
+      [
+        { role: "system", content: buildGenerationPrompt(schema, purpose, index, fileName, overview, chunkContent) },
+        {
+          role: "user",
+          content: [
+            `Source document to process: **${fileName}**${totalChunks > 1 ? ` (Part ${chunkIdx + 1} of ${totalChunks})` : ""}`,
+            "",
+            "The Stage 1 analysis below is CONTEXT to inform your output. Do NOT echo",
+            "its tables, bullet points, or prose. Your output must be FILE/REVIEW",
+            "blocks as specified in the system prompt — nothing else.",
+            ...(totalChunks > 1 ? [
+              "",
+              `NOTE: This is part ${chunkIdx + 1} of ${totalChunks}. Pages already written by previous parts`,
+              "will be MERGED with your output — so freely create or extend any concept/entity pages.",
+              "Do not hold back content thinking it was already covered.",
+            ] : []),
+            "",
+            "## Stage 1 Analysis (context only — do not repeat)",
+            "",
+            analysis,
+            "",
+            "## Original Source Content",
+            "",
+            chunkContent,
+            "",
+            "---",
+            "",
+            `Now emit the FILE blocks for the wiki files derived from **${fileName}**.`,
+            "Your response MUST begin with `---FILE:` as the very first characters.",
+            "No preamble. No analysis prose. Start immediately.",
+          ].join("\n"),
+        },
+      ],
+      {
+        onToken: (token) => { generation += token },
+        onDone: () => {},
+        onError: (err) => {
+          activity.updateItem(activityId, { status: "error", detail: `Generation failed${chunkLabel}: ${err.message}` })
+        },
+      },
+      signal,
+      { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 16384 },
+    )
+
+    const generationActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
+    if (generationActivity?.status === "error") {
+      throw new Error(generationActivity.detail || "Generation stream failed")
+    }
+
+    lastGeneration = generation
+    lastAnalysis = analysis
+
+    // ── Step 3: Write files ──────────────────────────────────────
+    activity.updateItem(activityId, { detail: `Writing files...${chunkLabel}` })
+    const { writtenPaths: chunkPaths, warnings: chunkWarnings, hardFailures: chunkHardFailures } = await writeFileBlocks(
+      pp,
+      generation,
+      llmConfig,
+      fileName,
+      signal,
+    )
+
+    for (const p of chunkPaths) {
+      if (!allWrittenPaths.includes(p)) allWrittenPaths.push(p)
+    }
+    allWriteWarnings.push(...chunkWarnings)
+    allHardFailures.push(...chunkHardFailures)
+
+    console.log(`[ingest:chunk] chunk ${chunkIdx + 1}/${totalChunks} wrote ${chunkPaths.length} file(s)`)
+
+    // Update file tree after each chunk so UI stays fresh
+    try {
+      const tree = await listDirectory(pp)
+      useWikiStore.getState().setFileTree(tree)
+      useWikiStore.getState().bumpDataVersion()
+    } catch { /* ignore */ }
   }
 
-  // ── Step 3: Write files ───────────────────────────────────────
-  activity.updateItem(activityId, { detail: "Writing files..." })
-  const { writtenPaths, warnings: writeWarnings, hardFailures } = await writeFileBlocks(
-    pp,
-    generation,
-    llmConfig,
-    fileName,
-    signal,
-  )
+  const writtenPaths = allWrittenPaths
+  const writeWarnings = allWriteWarnings
+  const hardFailures = allHardFailures
+  const generation = lastGeneration
+  const analysis = lastAnalysis
 
   // Surface parser / writer warnings to the activity panel so users
   // don't have to open devtools to find out a block was dropped.
@@ -682,16 +743,6 @@ async function autoIngestImpl(
   // through the back door.
   if (mmCfg.enabled && savedImages.length > 0 && !signal?.aborted) {
     await injectImagesIntoSourceSummary(pp, fileName, savedImages)
-  }
-
-  if (writtenPaths.length > 0) {
-    try {
-      const tree = await listDirectory(pp)
-      useWikiStore.getState().setFileTree(tree)
-      useWikiStore.getState().bumpDataVersion()
-    } catch {
-      // ignore
-    }
   }
 
   // ── Step 4: Parse review items ────────────────────────────────

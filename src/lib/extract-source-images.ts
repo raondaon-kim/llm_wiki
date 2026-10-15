@@ -65,7 +65,10 @@ export async function extractAndSaveSourceImages(
 
   const isPdf = (SUPPORTED_PDF_EXTS as readonly string[]).includes(ext)
   const isOffice = (SUPPORTED_OFFICE_EXTS as readonly string[]).includes(ext)
+  // Image extraction disabled — PDF/Office images are skipped entirely.
+  // Wiki pages are generated directly from text content only.
   if (!isPdf && !isOffice) return []
+  return []
 
   const slug = fileName.replace(/\.[^.]+$/, "")
   const destDir = `${pp}/wiki/media/${slug}`
