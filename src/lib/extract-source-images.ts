@@ -41,6 +41,9 @@ const SUPPORTED_OFFICE_EXTS = ["pptx", "docx", "ppt", "doc"] as const
 // aren't ZIP. Listed for completeness; Rust side will return Err which
 // the caller treats as "no images" gracefully.
 
+// Kept as a typed flag (not a bare early return) so the code below stays reachable for the type checker.
+const IMAGE_EXTRACTION_ENABLED = false as boolean
+
 /**
  * Extract every embedded image from `sourcePath` and save them to
  * `<projectPath>/wiki/media/<slug>/`. Returns metadata only — image
@@ -68,7 +71,7 @@ export async function extractAndSaveSourceImages(
   // Image extraction disabled — PDF/Office images are skipped entirely.
   // Wiki pages are generated directly from text content only.
   if (!isPdf && !isOffice) return []
-  return []
+  if (!IMAGE_EXTRACTION_ENABLED) return []
 
   const slug = fileName.replace(/\.[^.]+$/, "")
   const destDir = `${pp}/wiki/media/${slug}`
@@ -99,7 +102,7 @@ export async function extractAndSaveSourceImages(
   } catch (err) {
     console.warn(
       `[ingest:images] extraction failed for "${fileName}":`,
-      err instanceof Error ? err.message : err,
+      err instanceof Error ? err.message : String(err),
     )
     return []
   }

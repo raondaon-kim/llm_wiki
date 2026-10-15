@@ -10,7 +10,6 @@ static PENDING_CLIPS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new()); // 
 /// Daemon status: 0=starting, 1=running, 2=port_conflict, 3=error
 static DAEMON_STATUS: AtomicU8 = AtomicU8::new(0);
 
-const PORT: u16 = 19827;
 const MAX_BIND_RETRIES: u32 = 3;
 const MAX_RESTART_RETRIES: u32 = 10;
 const BIND_RETRY_DELAY_SECS: u64 = 2;
@@ -50,7 +49,7 @@ pub fn start_clip_server() {
                 let mut last_err = String::new();
                 let mut bound = None;
                 for attempt in 1..=MAX_BIND_RETRIES {
-                    match Server::http(format!("127.0.0.1:{}", PORT)) {
+                    match Server::http(format!("127.0.0.1:{}", crate::runtime::clip_port())) {
                         Ok(s) => {
                             bound = Some(s);
                             break;
@@ -74,7 +73,7 @@ pub fn start_clip_server() {
                     None => {
                         eprintln!(
                             "[Clip Server] Port {} unavailable after {} attempts: {}",
-                            PORT, MAX_BIND_RETRIES, last_err
+                            crate::runtime::clip_port(), MAX_BIND_RETRIES, last_err
                         );
                         DAEMON_STATUS.store(2, Ordering::Relaxed); // port_conflict
                         return; // Don't retry on port conflict — needs user action
@@ -84,7 +83,7 @@ pub fn start_clip_server() {
 
             DAEMON_STATUS.store(1, Ordering::Relaxed); // running
             restart_count = 0; // Reset on successful bind
-            println!("[Clip Server] Listening on http://127.0.0.1:{}", PORT);
+            println!("[Clip Server] Listening on http://127.0.0.1:{}", crate::runtime::clip_port());
 
             for mut request in server.incoming_requests() {
                 let cors_headers = vec![

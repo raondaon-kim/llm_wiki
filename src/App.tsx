@@ -13,6 +13,7 @@ import { AppLayout } from "@/components/layout/app-layout"
 import { WelcomeScreen } from "@/components/project/welcome-screen"
 import { CreateProjectDialog } from "@/components/project/create-project-dialog"
 import type { WikiProject } from "@/types/wiki"
+import { clipUrl } from "@/lib/runtime-info"
 
 function App() {
   const project = useWikiStore((s) => s.project)
@@ -94,6 +95,11 @@ function App() {
     const timer = setTimeout(async () => {
       if (cancelled) return
       try {
+        const { getRuntimeInfo } = await import("@/lib/runtime-info")
+        if ((await getRuntimeInfo()).managed) {
+          console.log("[update-check] skipped: this copy is managed by GenOffice")
+          return
+        }
         const { loadUpdateCheckState, saveUpdateCheckState } = await import(
           "@/lib/project-store"
         )
@@ -342,20 +348,28 @@ function App() {
       }
     }).catch((err) => console.error("Failed to configure project file sync:", err))
     // Notify local clip server of the current project + all recent projects
-    fetch("http://127.0.0.1:19827/project", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: proj.path }),
-    }).catch(() => {})
+    void clipUrl("/project")
+      .then((url) =>
+        fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: proj.path }),
+        }),
+      )
+      .catch(() => {})
 
     // Send all recent projects to clip server for extension project picker
     getRecentProjects().then((recents) => {
       const projects = recents.map((p) => ({ name: p.name, path: p.path }))
-      fetch("http://127.0.0.1:19827/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projects }),
-      }).catch(() => {})
+      void clipUrl("/projects")
+        .then((url) =>
+          fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projects }),
+          }),
+        )
+        .catch(() => {})
     }).catch(() => {})
     try {
       const tree = await listDirectory(proj.path)

@@ -3,6 +3,7 @@ mod clip_server;
 mod commands;
 mod panic_guard;
 mod proxy;
+mod runtime;
 mod types;
 
 use panic_guard::run_guarded;
@@ -30,6 +31,12 @@ fn api_server_reload_config() -> String {
         Ok("ok".to_string())
     })
     .unwrap_or_else(|e| format!("error: {e}"))
+}
+
+/// How this process was started (managed by GenOffice or not) and its local ports.
+#[tauri::command]
+fn runtime_info() -> runtime::RuntimeInfo {
+    runtime::runtime_info()
 }
 
 /// Apply a proxy configuration to the process env immediately, so the
@@ -94,6 +101,12 @@ pub fn run() {
             app.manage(commands::codex_cli::CodexCliState::default());
             app.manage(commands::file_sync::FileSyncState::default());
             api_server::start_api_server(app.handle().clone());
+            // the window starts hidden (tauri.conf.json); it is shown at once unless GenOffice manages it
+            if !runtime::is_managed() {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -147,9 +160,16 @@ pub fn run() {
             commands::file_sync::retry_file_change_task,
             commands::file_sync::ignore_file_change_task,
             set_proxy_env,
+            runtime_info,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if runtime::is_managed() {
+                    // GenOffice owns the lifetime: closing only hides the window
+                    api.prevent_close();
+                    let _ = window.hide();
+                    return;
+                }
                 #[cfg(target_os = "macos")]
                 {
                     let _ = window.hide();

@@ -2,6 +2,7 @@ import { useWikiStore } from "@/stores/wiki-store"
 import { enqueueIngest } from "./ingest-queue"
 import { listDirectory } from "@/commands/fs"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
+import { clipUrl } from "@/lib/runtime-info"
 
 const POLL_INTERVAL = 3000 // Check every 3 seconds
 let intervalId: ReturnType<typeof setInterval> | null = null
@@ -15,7 +16,7 @@ export function startClipWatcher() {
 
   intervalId = setInterval(async () => {
     try {
-      const res = await fetch("http://127.0.0.1:19827/clips/pending", { method: "GET" })
+      const res = await fetch(await clipUrl("/clips/pending"), { method: "GET" })
       const data = await res.json()
 
       if (!data.ok || !data.clips || data.clips.length === 0) return

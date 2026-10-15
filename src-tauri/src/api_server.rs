@@ -15,7 +15,6 @@ use walkdir::WalkDir;
 
 use crate::{clip_server, commands};
 
-const PORT: u16 = 19828;
 const API_PREFIX: &str = "/api/v1";
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_FILE_CONTENT_BYTES: u64 = 2 * 1024 * 1024;
@@ -71,7 +70,8 @@ pub fn start_api_server(app: AppHandle) {
         };
 
         API_STATUS.store(1, Ordering::Relaxed);
-        eprintln!("[API Server] Listening on http://127.0.0.1:{PORT}{API_PREFIX}");
+        let port = crate::runtime::api_port();
+        eprintln!("[API Server] Listening on http://127.0.0.1:{port}{API_PREFIX}");
 
         for request in server.incoming_requests() {
             let method = request.method().clone();
@@ -103,12 +103,13 @@ pub fn start_api_server(app: AppHandle) {
 }
 
 fn bind_server_with_retry() -> Option<Server> {
+    let port = crate::runtime::api_port();
     for attempt in 1..=MAX_BIND_RETRIES {
-        match Server::http(format!("127.0.0.1:{PORT}")) {
+        match Server::http(format!("127.0.0.1:{port}")) {
             Ok(server) => return Some(server),
             Err(err) => {
                 eprintln!(
-                    "[API Server] Failed to bind 127.0.0.1:{PORT} (attempt {attempt}/{MAX_BIND_RETRIES}): {err}"
+                    "[API Server] Failed to bind 127.0.0.1:{port} (attempt {attempt}/{MAX_BIND_RETRIES}): {err}"
                 );
                 if attempt < MAX_BIND_RETRIES {
                     thread::sleep(Duration::from_secs(BIND_RETRY_DELAY_SECS));
