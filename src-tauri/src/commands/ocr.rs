@@ -226,7 +226,7 @@ mod tests {
             eprintln!("skipped: LLM_WIKI_TESSERACT_DIR is not set");
             return;
         };
-        let pdf = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/scanned-ko.pdf");
+        let pdf = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/scanned-ko.pdf");
         let text = ocr_pdf_with_tesseract(pdf, &t).expect("ocr");
         assert!(text.starts_with("## Page 1"));
         assert!(text.contains("## Page 2"));
