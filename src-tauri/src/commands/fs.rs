@@ -402,7 +402,7 @@ fn extract_pdf_text(path: &str) -> Result<String, String> {
             // the Tesseract shipped with this program reads scanned pages without Python
             if let Some(t) = super::ocr::bundled_tesseract() {
                 eprintln!("[extract_pdf_text] scanned PDF: OCR with the bundled Tesseract");
-                match super::ocr::ocr_pdf_with_tesseract(path, &t) {
+                match super::ocr::ocr_pdf_once(path, &t) {
                     Ok(text) => return Ok(text),
                     Err(e) => eprintln!("[extract_pdf_text] bundled OCR failed: {e}; trying the other tools"),
                 }
@@ -439,7 +439,7 @@ fn extract_pdf_text(path: &str) -> Result<String, String> {
     // the Tesseract shipped with this program reads scanned pages without Python
     if let Some(t) = super::ocr::bundled_tesseract() {
         eprintln!("[extract_pdf_text] scanned PDF: OCR with the bundled Tesseract");
-        match super::ocr::ocr_pdf_with_tesseract(path, &t) {
+        match super::ocr::ocr_pdf_once(path, &t) {
             Ok(text) => return Ok(text),
             Err(e) => eprintln!("[extract_pdf_text] bundled OCR failed: {e}; trying the other tools"),
         }
