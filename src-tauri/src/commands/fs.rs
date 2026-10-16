@@ -468,7 +468,7 @@ fn tesseract_dir() -> Option<String> {
 }
 
 /// Run helper tools without a console window flashing up (Windows only).
-fn hide_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
+pub(crate) fn hide_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
