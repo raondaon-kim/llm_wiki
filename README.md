@@ -11,6 +11,7 @@
 - **포트 지정**: `LLM_WIKI_API_PORT`, `LLM_WIKI_CLIP_PORT`로 로컬 API와 웹 클리퍼 포트를 정하고, 화면 쪽도 그 포트를 따릅니다.
 - **창 열기·종료 API**: `POST /api/v1/app/show`(창을 앞으로)와 `POST /api/v1/app/quit`(종료). 다른 API와 같은 토큰으로 인증합니다.
 - **PDF 처리**: 텍스트 추출이 안 되는 PDF는 pymupdf와 OCRmyPDF로 읽습니다. 도구는 PATH에서 찾고(Tesseract는 `TESSERACT_DIR`), 콘솔 창을 띄우지 않습니다. 긴 자료는 나눠서 학습합니다.
+- **스캔 PDF 인식**: 글자가 없는 스캔 PDF는 pdfium으로 페이지를 그려 프로그램 옆 `tesseract/` 폴더의 Tesseract(한국어·영어)로 읽습니다. Open GenOffice 설치 파일에 함께 들어 있어 따로 설치할 것이 없습니다.
 
 자세한 목록은 [MODIFICATIONS.md](MODIFICATIONS.md)에 있습니다.
 

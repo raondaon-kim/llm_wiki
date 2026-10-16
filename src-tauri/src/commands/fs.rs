@@ -399,6 +399,14 @@ fn extract_pdf_text(path: &str) -> Result<String, String> {
             //      (common in Korean PDFs) without any OCR overhead.
             //   2. If pymupdf also returns sparse text, fall back to OCRmyPDF
             //      for truly image-only (scanned) PDFs.
+            // the Tesseract shipped with this program reads scanned pages without Python
+            if let Some(t) = super::ocr::bundled_tesseract() {
+                eprintln!("[extract_pdf_text] scanned PDF: OCR with the bundled Tesseract");
+                match super::ocr::ocr_pdf_with_tesseract(path, &t) {
+                    Ok(text) => return Ok(text),
+                    Err(e) => eprintln!("[extract_pdf_text] bundled OCR failed: {e}; trying the other tools"),
+                }
+            }
             eprintln!(
                 "[extract_pdf_text] sparse text detected — trying pymupdf on '{path}'"
             );
@@ -427,6 +435,14 @@ fn extract_pdf_text(path: &str) -> Result<String, String> {
     let probe = extract_pdf_markdown(path, None, "", &ExtractOptions::default())?;
     if !is_scanned(&probe) {
         return Ok(probe);
+    }
+    // the Tesseract shipped with this program reads scanned pages without Python
+    if let Some(t) = super::ocr::bundled_tesseract() {
+        eprintln!("[extract_pdf_text] scanned PDF: OCR with the bundled Tesseract");
+        match super::ocr::ocr_pdf_with_tesseract(path, &t) {
+            Ok(text) => return Ok(text),
+            Err(e) => eprintln!("[extract_pdf_text] bundled OCR failed: {e}; trying the other tools"),
+        }
     }
     // Sparse text — try pymupdf before OCR.
     eprintln!("[extract_pdf_text] sparse text detected — trying pymupdf on '{path}'");
