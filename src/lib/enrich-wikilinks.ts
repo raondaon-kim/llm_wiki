@@ -3,6 +3,8 @@ import { streamChat } from "./llm-client"
 import { useWikiStore, type LlmConfig } from "@/stores/wiki-store"
 import { buildLanguageDirective } from "./output-language"
 import { normalizePath } from "@/lib/path-utils"
+import { selectIndexContext } from "@/lib/index-context"
+import { computeContextBudget } from "@/lib/context-budget"
 
 /**
  * Lightweight post-save enrichment: ask LLM to add [[wikilinks]] to a saved wiki page.
@@ -29,10 +31,11 @@ export async function enrichWithWikilinks(
 ): Promise<void> {
   const pp = normalizePath(projectPath)
   const fp = normalizePath(filePath)
-  const [content, index] = await Promise.all([
-    readFile(fp),
-    readFile(`${pp}/wiki/index.md`).catch(() => ""),
-  ])
+  const content = await readFile(fp)
+  // The pages most likely to be linked from this one, not the whole index.
+  const index = content
+    ? await selectIndexContext(pp, content, computeContextBudget(llmConfig.maxContextSize).indexBudget)
+    : ""
 
   if (!content || !index) return
 

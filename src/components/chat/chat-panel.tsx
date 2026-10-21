@@ -15,6 +15,7 @@ import { normalizePath, getFileName, getRelativePath } from "@/lib/path-utils"
 import { getOutputLanguage, buildLanguageReminder } from "@/lib/output-language"
 import { isGreeting } from "@/lib/greeting-detector"
 import { computeContextBudget } from "@/lib/context-budget"
+import { selectIndexContext } from "@/lib/index-context"
 
 // Store the page mapping from the last query so SourceFilesBar can show which pages were cited
 export let lastQueryPages: { title: string; path: string }[] = []
@@ -204,41 +205,16 @@ export function ChatPanel() {
           maxPageSize: MAX_PAGE_SIZE,
         } = computeContextBudget(llmConfig.maxContextSize)
 
-        const [rawIndex, purpose] = await Promise.all([
-          readFile(`${pp}/wiki/index.md`).catch(() => ""),
+        // The top index plus the index lines that share words with the
+        // question, within the index budget (see index-context.ts).
+        const [index, purpose] = await Promise.all([
+          selectIndexContext(pp, text, INDEX_BUDGET),
           readFile(`${pp}/purpose.md`).catch(() => ""),
         ])
 
         // ── Phase 1: Tokenized search → top 10 ────────────────
         const searchResults = await searchWiki(pp, text)
         const topSearchResults = searchResults.slice(0, 10)
-
-        // ── Trim index by relevance if over budget ─────────────
-        let index = rawIndex
-        if (rawIndex.length > INDEX_BUDGET) {
-          const { tokenizeQuery } = await import("@/lib/search")
-          const tokens = tokenizeQuery(text)
-          const lines = rawIndex.split("\n")
-          const keptLines: string[] = []
-          let keptSize = 0
-
-          for (const line of lines) {
-            const isHeader = line.startsWith("##")
-            const lower = line.toLowerCase()
-            const isRelevant = tokens.some((t) => lower.includes(t))
-
-            if (isHeader || isRelevant) {
-              if (keptSize + line.length + 1 <= INDEX_BUDGET) {
-                keptLines.push(line)
-                keptSize += line.length + 1
-              }
-            }
-          }
-          index = keptLines.join("\n")
-          if (index.length < rawIndex.length) {
-            index += "\n\n[...index trimmed to relevant entries...]"
-          }
-        }
 
         // ── Phase 2: Graph 1-level expansion ───────────────────
         // Note: Vector search (if enabled) is already merged into searchResults

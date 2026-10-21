@@ -1,11 +1,13 @@
 import { webSearch } from "./web-search"
 import { streamChat } from "./llm-client"
 import { autoIngest } from "./ingest"
-import { writeFile, readFile, listDirectory } from "@/commands/fs"
+import { writeFile, listDirectory } from "@/commands/fs"
 import { useWikiStore, type LlmConfig, type SearchApiConfig } from "@/stores/wiki-store"
 import { useResearchStore } from "@/stores/research-store"
 import { normalizePath } from "@/lib/path-utils"
 import { buildLanguageDirective } from "@/lib/output-language"
+import { selectIndexContext } from "@/lib/index-context"
+import { computeContextBudget } from "@/lib/context-budget"
 
 /**
  * Queue a deep research task. Automatically starts processing if under concurrency limit.
@@ -104,12 +106,13 @@ async function executeResearch(
       .join("\n\n")
 
     // Read existing wiki index to enable cross-referencing
-    let wikiIndex = ""
-    try {
-      wikiIndex = await readFile(`${pp}/wiki/index.md`)
-    } catch {
-      // no index yet
-    }
+    // Only the part of the index that shares words with the topic and
+    // the search results; the whole index can be far too large.
+    const wikiIndex = await selectIndexContext(
+      pp,
+      `${topic}\n${searchContext}`,
+      computeContextBudget(llmConfig.maxContextSize).indexBudget,
+    )
 
     const systemPrompt = [
       "You are a research assistant. Synthesize the web search results into a comprehensive wiki page.",

@@ -11,6 +11,8 @@ import { sanitizeIngestedFileContent } from "@/lib/ingest-sanitize"
 import { mergePageContent, type MergeFn } from "@/lib/page-merge"
 import { withProjectLock } from "@/lib/project-mutex"
 import { isIndexFilePath, refreshWikiIndex } from "@/lib/wiki-index"
+import { capOverview, selectIndexContext } from "@/lib/index-context"
+import { computeContextBudget } from "@/lib/context-budget"
 import {
   extractAndSaveSourceImages,
   buildImageMarkdownSection,
@@ -317,13 +319,15 @@ async function autoIngestImpl(
     filesWritten: [],
   })
 
-  const [sourceContent, schema, purpose, index, overview] = await Promise.all([
+  const [sourceContent, schema, purpose, overview] = await Promise.all([
     tryReadFile(sp),
     tryReadFile(`${pp}/schema.md`),
     tryReadFile(`${pp}/purpose.md`),
-    tryReadFile(`${pp}/wiki/index.md`),
     tryReadFile(`${pp}/wiki/overview.md`),
   ])
+  // Each stage gets the part of the index that shares words with what
+  // it is reading, never the whole index (see index-context.ts).
+  const indexBudget = computeContextBudget(llmConfig.maxContextSize).indexBudget
 
   // ── Cache check: skip re-ingest if source content hasn't changed ──
   //
@@ -574,11 +578,12 @@ async function autoIngestImpl(
     activity.updateItem(activityId, { detail: `Step 1/2: Analyzing source...${chunkLabel}` })
 
     let analysis = ""
+    const analysisIndex = await selectIndexContext(pp, chunkContent, indexBudget)
 
     await streamChat(
       llmConfig,
       [
-        { role: "system", content: buildAnalysisPrompt(purpose, index, chunkContent) },
+        { role: "system", content: buildAnalysisPrompt(purpose, analysisIndex, chunkContent) },
         { role: "user", content: `Analyze this source document:\n\n**File:** ${fileName}${folderContext ? `\n**Folder context:** ${folderContext}` : ""}${totalChunks > 1 ? `\n**Part:** ${chunkIdx + 1} of ${totalChunks}` : ""}\n\n---\n\n${chunkContent}` },
       ],
       {
@@ -601,11 +606,12 @@ async function autoIngestImpl(
     activity.updateItem(activityId, { detail: `Step 2/2: Generating wiki pages...${chunkLabel}` })
 
     let generation = ""
+    const generationIndex = await selectIndexContext(pp, `${chunkContent}\n${analysis}`, indexBudget)
 
     await streamChat(
       llmConfig,
       [
-        { role: "system", content: buildGenerationPrompt(schema, purpose, index, fileName, overview, chunkContent) },
+        { role: "system", content: buildGenerationPrompt(schema, purpose, generationIndex, fileName, overview, chunkContent) },
         {
           role: "user",
           content: [
@@ -1082,7 +1088,7 @@ export function buildAnalysisPrompt(purpose: string, index: string, sourceConten
     "If a folder context is provided, use it as a hint for categorization — the folder structure often reflects the user's organizational intent (e.g., 'papers/energy' suggests the file is an energy-related paper).",
     "",
     purpose ? `## Wiki Purpose (for context)\n${purpose}` : "",
-    index ? `## Current Wiki Index (for checking existing content)\n${index}` : "",
+    index ? `## Relevant Wiki Index (for checking existing content; the app maintains the index)\n${index}` : "",
   ].filter(Boolean).join("\n")
 }
 
@@ -1108,9 +1114,8 @@ export function buildGenerationPrompt(schema: string, purpose: string, index: st
     `1. A source summary page at **wiki/sources/${sourceBaseName}.md** (MUST use this exact path)`,
     "2. Entity pages in wiki/entities/ for key entities identified in the analysis",
     "3. Concept pages in wiki/concepts/ for key concepts identified in the analysis",
-    "4. An updated wiki/index.md — add new entries to existing categories, preserve all existing entries",
-    "5. A log entry for wiki/log.md (just the new entry to append, format: ## [YYYY-MM-DD] ingest | Title)",
-    "6. An updated wiki/overview.md — a high-level summary of what the entire wiki covers, updated to reflect the newly ingested source. This should be a comprehensive 2-5 paragraph overview of ALL topics in the wiki, not just the new source.",
+    "4. A log entry for wiki/log.md (just the new entry to append, format: ## [YYYY-MM-DD] ingest | Title)",
+    "5. An updated wiki/overview.md — a high-level summary of what the entire wiki covers, updated to reflect the newly ingested source. This should be a comprehensive 2-5 paragraph overview of ALL topics in the wiki, not just the new source.",
     "",
     "## Frontmatter Rules (CRITICAL — parser is strict)",
     "",
@@ -1186,8 +1191,8 @@ export function buildGenerationPrompt(schema: string, purpose: string, index: st
     "",
     purpose ? `## Wiki Purpose\n${purpose}` : "",
     schema ? `## Wiki Schema\n${schema}` : "",
-    index ? `## Current Wiki Index (preserve all existing entries, add new ones)\n${index}` : "",
-    overview ? `## Current Overview (update this to reflect the new source)\n${overview}` : "",
+    index ? `## Relevant Wiki Index (for linking; the app maintains the index)\n${index}` : "",
+    overview ? `## Current Overview (update this to reflect the new source)\n${capOverview(overview)}` : "",
     "",
     // ── OUTPUT FORMAT MUST BE THE LAST SECTION — models weight recent instructions highest ──
     "## Output Format (MUST FOLLOW EXACTLY — this is how the parser reads your response)",
@@ -1484,12 +1489,16 @@ export async function startIngest(
     )
   })
 
-  const [sourceContent, schema, purpose, index] = await Promise.all([
+  const [sourceContent, schema, purpose] = await Promise.all([
     tryReadFile(sp),
     tryReadFile(`${pp}/wiki/schema.md`),
     tryReadFile(`${pp}/wiki/purpose.md`),
-    tryReadFile(`${pp}/wiki/index.md`),
   ])
+  const index = await selectIndexContext(
+    pp,
+    sourceContent,
+    computeContextBudget(llmConfig.maxContextSize).indexBudget,
+  )
 
   const fileName = getFileName(sp)
 
@@ -1500,7 +1509,7 @@ export async function startIngest(
     "",
     purpose ? `## Wiki Purpose\n${purpose}` : "",
     schema ? `## Wiki Schema\n${schema}` : "",
-    index ? `## Current Wiki Index\n${index}` : "",
+    index ? `## Relevant Wiki Index (the app maintains the index)\n${index}` : "",
   ]
     .filter(Boolean)
     .join("\n\n")
@@ -1553,14 +1562,16 @@ export async function executeIngestWrites(
   const pp = normalizePath(projectPath)
   const store = getStore()
 
-  const [schema, index] = await Promise.all([
-    tryReadFile(`${pp}/wiki/schema.md`),
-    tryReadFile(`${pp}/wiki/index.md`),
-  ])
+  const schema = await tryReadFile(`${pp}/wiki/schema.md`)
 
   const conversationHistory = store.messages
     .filter((m) => m.role !== "system")
     .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }))
+  const index = await selectIndexContext(
+    pp,
+    conversationHistory.map((m) => m.content).join("\n"),
+    computeContextBudget(llmConfig.maxContextSize).indexBudget,
+  )
 
   const writePrompt = [
     "Based on our discussion, please generate the wiki files that should be created or updated.",
@@ -1568,7 +1579,7 @@ export async function executeIngestWrites(
     userGuidance ? `Additional guidance: ${userGuidance}` : "",
     "",
     schema ? `## Wiki Schema\n${schema}` : "",
-    index ? `## Current Wiki Index\n${index}` : "",
+    index ? `## Relevant Wiki Index (the app maintains the index; do not write wiki/index.md)\n${index}` : "",
     "",
     "Output ONLY the file contents in this exact format for each file:",
     "```",
