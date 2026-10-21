@@ -54,3 +54,40 @@ describe("deleting rebuilds the index", () => {
     expect(await fileExists(`${tmp.path}/wiki/index/old.md`)).toBe(false)
   })
 })
+
+describe("GenOffice's own pages are never another source's pages", () => {
+  // GenOffice lists the original document's absolute path; the mirror copy has the same bare name
+  const genofficePage = [
+    "---",
+    "type: work",
+    "title: 보고서 업무",
+    // as GenOffice's serializePage writes it (JSON-quoted, backslashes doubled)
+    `sources: [${JSON.stringify("C:\\Users\\u\\Documents\\보고서.docx")}]`,
+    "updated: 2026-10-21",
+    "---",
+    "## 개요",
+    "누적된 업무 기록",
+    "",
+  ].join("\n")
+
+  beforeEach(async () => {
+    await writeFileRaw(`${tmp.path}/wiki/work/보고서-업무.md`, genofficePage)
+    await writeFileRaw(`${tmp.path}/wiki/sources/보고서.md`, page("보고서 요약", ["보고서.docx"]))
+    await writeFileRaw(`${tmp.path}/raw/sources/genoffice-saved/보고서.docx`, "copy\n")
+  })
+
+  it("a changed copy (replace mode) keeps a page whose source is an absolute path", async () => {
+    await deleteSourceFiles(tmp.path, ["raw/sources/genoffice-saved/보고서.docx"], {
+      fileAlreadyDeleted: true,
+      keepMultiSourcePages: true,
+      keepLinksToDeleted: true,
+    })
+    expect(await fileExists(`${tmp.path}/wiki/sources/보고서.md`)).toBe(false)
+    expect(await readFileRaw(`${tmp.path}/wiki/work/보고서-업무.md`)).toBe(genofficePage)
+  })
+
+  it("deleting the copy keeps it too, unchanged", async () => {
+    await deleteSourceFiles(tmp.path, [`${tmp.path}/raw/sources/genoffice-saved/보고서.docx`])
+    expect(await readFileRaw(`${tmp.path}/wiki/work/보고서-업무.md`)).toBe(genofficePage)
+  })
+})

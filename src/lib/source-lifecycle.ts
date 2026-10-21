@@ -443,7 +443,19 @@ function flattenMd(nodes: readonly FileNode[]): FileNode[] {
   return out
 }
 
+/**
+ * An absolute path in `sources:` (a drive letter, a UNC share or a leading
+ * slash) is not one of this wiki's sources: GenOffice records the original
+ * document it learned a page from that way. Its copy in raw/sources can have
+ * the same bare name, and must not take GenOffice's pages with it.
+ */
+function isAbsoluteSourceRef(source: string): boolean {
+  const s = source.trim()
+  return /^[a-zA-Z]:[\\/]/.test(s) || s.startsWith("\\\\") || s.startsWith("/")
+}
+
 function sourceNameMatchesAny(source: string, deletingNames: Set<string>): boolean {
+  if (isAbsoluteSourceRef(source)) return false
   const normalizedSource = normalizePath(source).split("/").pop()?.toLowerCase() ?? ""
   return deletingNames.has(normalizedSource)
 }

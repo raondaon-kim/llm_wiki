@@ -20,6 +20,7 @@ import {
 } from "@/lib/source-lifecycle"
 import { isPathAllowedBySourceWatch, normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 import { checkIngestCache } from "@/lib/ingest-cache"
+import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { isIndexFilePath } from "@/lib/wiki-index"
 
 let unlistenQueue: UnlistenFn | null = null
@@ -190,8 +191,12 @@ async function enqueueRawSourceChanges(project: WikiProject, tasks: FileChangeTa
       .filter((task) => task.projectId === project.id && task.kind === "modified")
       .map((task) => normalizePath(task.path)),
   )
-  for (const rel of paths) {
-    if (modified.has(normalizePath(rel))) await clearPagesOfChangedSource(project.path, rel)
+  // Only when the ingest will actually be queued: without a usable model
+  // enqueueSourceIngest queues nothing, and cleared pages would stay gone.
+  if (hasUsableLlm(useWikiStore.getState().llmConfig)) {
+    for (const rel of paths) {
+      if (modified.has(normalizePath(rel))) await clearPagesOfChangedSource(project.path, rel)
+    }
   }
 
   try {

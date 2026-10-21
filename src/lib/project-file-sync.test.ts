@@ -772,6 +772,22 @@ describe("project file sync", () => {
       expect(mocks.checkIngestCache).not.toHaveBeenCalled()
     })
 
+    it("without a usable model nothing is queued, so the old pages are kept", async () => {
+      const { useWikiStore } = await import("@/stores/wiki-store")
+      useWikiStore.getState().setLlmConfig({
+        provider: "openai",
+        apiKey: "",
+        model: "m",
+        ollamaUrl: "",
+        customEndpoint: "",
+        maxContextSize: 128000,
+      })
+      await emitChange("modified")
+      await vi.advanceTimersByTimeAsync(500)
+      expect(mocks.cascadeDeleteWikiPage).not.toHaveBeenCalled()
+      expect(mocks.removeFromIngestCache).not.toHaveBeenCalled()
+    })
+
     it("a failure while removing the old pages still queues the source for ingest", async () => {
       mocks.cascadeDeleteWikiPage.mockImplementation(async () => {
         throw new Error("locked")
