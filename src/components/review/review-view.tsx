@@ -16,6 +16,7 @@ import { useReviewStore, type ReviewItem } from "@/stores/review-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { writeFile, readFile, listDirectory, deleteFile } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
+import { refreshWikiIndex } from "@/lib/wiki-index"
 import { hasConfiguredSearchProvider } from "@/lib/web-search"
 
 const typeConfig: Record<ReviewItem["type"], { icon: typeof AlertTriangle; label: string; color: string }> = {
@@ -79,17 +80,8 @@ export function ReviewView() {
         const frontmatter = `---\ntype: query\ntitle: "${title.replace(/"/g, '\\"')}"\ncreated: ${date}\ntags: []\n---\n\n`
         await writeFile(filePath, frontmatter + cleanContent)
 
-        // Update index
-        const indexPath = `${pp}/wiki/index.md`
-        let indexContent = ""
-        try { indexContent = await readFile(indexPath) } catch { indexContent = "# Wiki Index\n" }
-        const entry = `- [[queries/${slug}-${date}|${title}]]`
-        if (indexContent.includes("## Queries")) {
-          indexContent = indexContent.replace(/(## Queries\n)/, `$1${entry}\n`)
-        } else {
-          indexContent = indexContent.trimEnd() + "\n\n## Queries\n" + entry + "\n"
-        }
-        await writeFile(indexPath, indexContent)
+        // The index lists every page; rebuild it so the new page appears.
+        await refreshWikiIndex(pp)
 
         // Append log
         const logPath = `${pp}/wiki/log.md`
@@ -185,18 +177,8 @@ export function ReviewView() {
           const body = `# ${title}\n\n${item.description}\n`
           await writeFile(filePath, frontmatter + body)
 
-          // Update index
-          const indexPath = `${pp}/wiki/index.md`
-          let indexContent = ""
-          try { indexContent = await readFile(indexPath) } catch { indexContent = "# Wiki Index\n" }
-          const sectionHeader = `## ${dir.charAt(0).toUpperCase() + dir.slice(1)}`
-          const entry = `- [[${dir}/${slug}-${date}|${title}]]`
-          if (indexContent.includes(sectionHeader)) {
-            indexContent = indexContent.replace(new RegExp(`(${sectionHeader}\n)`), `$1${entry}\n`)
-          } else {
-            indexContent = indexContent.trimEnd() + `\n\n${sectionHeader}\n${entry}\n`
-          }
-          await writeFile(indexPath, indexContent)
+          // The index lists every page; rebuild it so the new page appears.
+          await refreshWikiIndex(pp)
 
           // Log
           const logPath = `${pp}/wiki/log.md`

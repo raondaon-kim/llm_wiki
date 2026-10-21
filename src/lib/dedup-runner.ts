@@ -13,13 +13,13 @@ import {
   detectDuplicateGroups,
   extractEntitySummary,
   mergeDuplicateGroup,
-  rewriteIndexMd,
   type DedupLlmCall,
   type DuplicateGroup,
   type EntitySummary,
   type MergeResult,
 } from "./dedup"
 import { loadNotDuplicates } from "./dedup-storage"
+import { refreshWikiIndex } from "./wiki-index"
 
 /**
  * Wrap streamChat into the (system, user, signal) → string shape
@@ -237,18 +237,8 @@ export async function executeMerge(
     }
   }
 
-  // 6. Rewrite index.md to drop merged-away entries.
-  const indexPath = `${pp}/wiki/index.md`
-  const indexEntry = allPages.find((p) => p.path === "wiki/index.md")
-  if (indexEntry) {
-    const removed = new Set(
-      group.slugs.filter((s) => s !== canonicalSlug),
-    )
-    const rewritten = rewriteIndexMd(indexEntry.content, removed)
-    if (rewritten !== indexEntry.content) {
-      await writeFile(indexPath, rewritten)
-    }
-  }
+  // 6. Rebuild the index from the pages that are left.
+  await refreshWikiIndex(pp)
 
   return result
 }

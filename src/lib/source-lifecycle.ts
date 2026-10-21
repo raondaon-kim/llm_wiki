@@ -21,9 +21,9 @@ import {
 } from "@/lib/sources-merge"
 import { removeFromIngestCache } from "@/lib/ingest-cache"
 import { removePageEmbedding } from "@/lib/embedding"
+import { isIndexFilePath, refreshWikiIndex } from "@/lib/wiki-index"
 import {
   buildDeletedKeys,
-  cleanIndexListing,
   normalizeWikiRefKey,
   stripDeletedWikilinks,
 } from "@/lib/wiki-cleanup"
@@ -322,6 +322,8 @@ export async function cleanupDeletedWikiPages(
   const allMd = flattenMd(wikiTree)
 
   for (const file of allMd) {
+    // index files are rebuilt below, not edited line by line
+    if (isIndexFilePath(normalizePath(file.path).slice(pp.length + 1))) continue
     let content: string
     try {
       content = await readFile(file.path)
@@ -330,9 +332,6 @@ export async function cleanupDeletedWikiPages(
     }
 
     let updated = content
-    if (file.path === `${pp}/wiki/index.md` || file.name === "index.md") {
-      updated = cleanIndexListing(updated, deletedKeys)
-    }
     updated = stripDeletedWikilinks(updated, deletedKeys)
 
     const related = parseFrontmatterArray(updated, "related")
@@ -351,6 +350,8 @@ export async function cleanupDeletedWikiPages(
       }
     }
   }
+
+  await refreshWikiIndex(pp)
 }
 
 async function getUniqueDestPath(dir: string, fileName: string): Promise<string> {

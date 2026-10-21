@@ -15,6 +15,7 @@ import { deleteFile, listDirectory, readFile, writeFileAtomic } from "@/commands
 import type { FileNode } from "@/types/wiki"
 import { parseFrontmatter } from "./frontmatter"
 import { normalizePath } from "./path-utils"
+import { currentOutputLanguage } from "./output-language"
 
 export interface IndexPage {
   relPath: string
@@ -392,3 +393,46 @@ export async function rebuildWikiIndex(
   }
   return { written, removed }
 }
+
+/** True for the files this module owns: `wiki/index.md` and `wiki/index/**`. */
+export function isIndexFilePath(relPath: string): boolean {
+  const p = normalizePath(relPath).replace(/^(\.\/|\/)+/, "").toLowerCase()
+  return p === "wiki/index.md" || p.startsWith("wiki/index/")
+}
+
+/**
+ * Rebuild the index in the current output language. A failure is logged,
+ * never thrown: the pages are already written, and the next rebuild
+ * (after the next change, or at app start) repairs the index.
+ */
+export function refreshWikiIndex(projectPath: string): Promise<void> {
+  // One rebuild per project at a time. A request that arrives while one
+  // runs marks it to run once more, so every caller's change is in the
+  // index when its promise resolves. (Not the project lock: autoIngest
+  // already holds that, and it is not re-entrant.)
+  const key = normalizePath(projectPath).replace(/\/+$/, "")
+  const current = rebuilds.get(key)
+  if (current) {
+    current.again = true
+    return current.done
+  }
+  const state = { again: false, done: Promise.resolve() }
+  rebuilds.set(key, state)
+  state.done = (async () => {
+    try {
+      do {
+        state.again = false
+        try {
+          await rebuildWikiIndex(key, currentOutputLanguage())
+        } catch (err) {
+          console.warn("[wiki-index] rebuild failed:", err instanceof Error ? err.message : err)
+        }
+      } while (state.again)
+    } finally {
+      rebuilds.delete(key)
+    }
+  })()
+  return state.done
+}
+
+const rebuilds = new Map<string, { again: boolean; done: Promise<void> }>()

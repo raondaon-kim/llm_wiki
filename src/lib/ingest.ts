@@ -10,6 +10,7 @@ import { checkIngestCache, saveIngestCache } from "@/lib/ingest-cache"
 import { sanitizeIngestedFileContent } from "@/lib/ingest-sanitize"
 import { mergePageContent, type MergeFn } from "@/lib/page-merge"
 import { withProjectLock } from "@/lib/project-mutex"
+import { isIndexFilePath, refreshWikiIndex } from "@/lib/wiki-index"
 import {
   extractAndSaveSourceImages,
   buildImageMarkdownSection,
@@ -790,6 +791,12 @@ async function autoIngestImpl(
     }
   }
 
+  // Still inside the project lock (autoIngest holds it for the whole
+  // run), so two ingests never rebuild the index at the same time.
+  if (writtenPaths.length > 0) {
+    await refreshWikiIndex(pp)
+  }
+
   const detail = writtenPaths.length > 0
     ? `${writtenPaths.length} files written${reviewItems.length > 0 ? `, ${reviewItems.length} review item(s)` : ""}`
     : "No files generated"
@@ -870,6 +877,14 @@ async function writeFileBlocks(
     // paper over it forever.
     const content = sanitizeIngestedFileContent(rawContent)
 
+    // The index files are built from the pages on disk by
+    // wiki-index.ts, never by the LLM (an LLM-rewritten index grows
+    // without bound and is silently cut at the output limit).
+    if (isIndexFilePath(relativePath)) {
+      console.info(`[ingest] ignored "${relativePath}" — the index is built by the app`)
+      continue
+    }
+
     // Language guard: reject individual FILE blocks whose body contradicts
     // the user-set target language. Skip:
     // - log.md (structural, short)
@@ -905,15 +920,12 @@ async function writeFileBlocks(
         const appended = existing ? `${existing}\n\n${content.trim()}` : content.trim()
         await writeFile(fullPath, appended)
       } else if (
-        relativePath === "wiki/index.md" ||
-        relativePath.endsWith("/index.md") ||
         relativePath === "wiki/overview.md" ||
         relativePath.endsWith("/overview.md")
       ) {
-        // Listing pages (index / overview) are always overwritten
-        // wholesale — their sources field is incidental and merging
-        // wouldn't make semantic sense (they aren't source-derived
-        // content pages).
+        // The overview is always overwritten wholesale — its sources
+        // field is incidental and merging wouldn't make semantic
+        // sense (it isn't a source-derived content page).
         await writeFile(fullPath, content)
       } else {
         // Content pages (entities / concepts / queries / synthesis /
@@ -1622,6 +1634,7 @@ export async function executeIngestWrites(
     const content = match[2]
 
     if (!relativePath) continue
+    if (isIndexFilePath(relativePath)) continue // built by wiki-index.ts
 
     const fullPath = `${pp}/${relativePath}`
 
@@ -1642,6 +1655,7 @@ export async function executeIngestWrites(
   }
 
   if (writtenPaths.length > 0) {
+    await refreshWikiIndex(pp)
     const fileList = writtenPaths.map((p) => `- ${p}`).join("\n")
     getStore().addMessage("system", `Files written to wiki:\n${fileList}`)
   } else {

@@ -16,8 +16,9 @@ import { useWikiStore } from "@/stores/wiki-store"
 import { useReviewStore } from "@/stores/review-store"
 import { runStructuralLint, runSemanticLint, type LintResult } from "@/lib/lint"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
-import { readFile, writeFile, listDirectory } from "@/commands/fs"
+import { readFile, listDirectory } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
+import { refreshWikiIndex } from "@/lib/wiki-index"
 import { useTranslation } from "react-i18next"
 
 export function LintView() {
@@ -98,17 +99,9 @@ export function LintView() {
     try {
       switch (result.type) {
         case "orphan": {
-          // Add a link to this page from index.md
-          const indexPath = `${pp}/wiki/index.md`
-          let indexContent = ""
-          try { indexContent = await readFile(indexPath) } catch { indexContent = "# Wiki Index\n" }
-
-          const pageName = result.page.replace(".md", "").replace(/^.*\//, "")
-          const entry = `- [[${pageName}]]`
-          if (!indexContent.includes(entry)) {
-            indexContent = indexContent.trimEnd() + "\n" + entry + "\n"
-            await writeFile(indexPath, indexContent)
-          }
+          // Every page is listed in the index files; rebuild them so this
+          // one is listed too.
+          await refreshWikiIndex(pp)
           // Remove from results
           setResults((prev) => prev.filter((_, i) => i !== index))
           break

@@ -86,10 +86,8 @@ venue: ""
 
 ## Index Format
 
-`wiki/index.md` lists all pages grouped by type. Each entry:
-```
-- [[page-slug]] — one-line description
-```
+`wiki/index.md` and the files under `wiki/index/` are maintained by the app; do not write them.
+The app builds them from each page's `title`, `tags`, `updated` and first sentence, so give every page all four.
 
 ## Log Format
 
@@ -103,7 +101,7 @@ venue: ""
 ## Cross-referencing Rules
 
 - Use `[[page-slug]]` syntax to link between wiki pages
-- Every entity and concept should appear in `wiki/index.md`
+- Every entity and concept page needs a `title` and `tags` (the app lists it in the index from them)
 - Queries link to the sources and concepts they draw on
 - Synthesis pages cite all contributing sources via `related:`
 

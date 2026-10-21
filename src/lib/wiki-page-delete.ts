@@ -22,9 +22,9 @@
 import { deleteFile, listDirectory, readFile, writeFile } from "@/commands/fs"
 import { getFileStem, normalizePath } from "@/lib/path-utils"
 import { removePageEmbedding } from "@/lib/embedding"
+import { isIndexFilePath, refreshWikiIndex } from "@/lib/wiki-index"
 import {
   buildDeletedKeys,
-  cleanIndexListing,
   extractFrontmatterTitle,
   normalizeWikiRefKey,
   stripDeletedWikilinks,
@@ -200,10 +200,10 @@ export async function cascadeDeleteWikiPagesWithRefs(
   const deletedKeys = buildDeletedKeys(infos)
   const wikiTree = await listDirectory(`${pp}/wiki`)
   const allMd = flattenMd(wikiTree)
-  const indexAbs = `${pp}/wiki/index.md`
-
   for (const file of allMd) {
     if (result.deletedPaths.includes(file.path)) continue // already gone
+    // index files are rebuilt below, not edited line by line
+    if (isIndexFilePath(normalizePath(file.path).slice(pp.length + 1))) continue
     let content: string
     try {
       content = await readFile(file.path)
@@ -212,9 +212,6 @@ export async function cascadeDeleteWikiPagesWithRefs(
     }
 
     let updated = content
-    if (file.path === indexAbs || file.name === "index.md") {
-      updated = cleanIndexListing(updated, deletedKeys)
-    }
     updated = stripDeletedWikilinks(updated, deletedKeys)
 
     // `related:` frontmatter — drop entries that point at a deleted
@@ -241,5 +238,6 @@ export async function cascadeDeleteWikiPagesWithRefs(
     }
   }
 
+  await refreshWikiIndex(pp)
   return result
 }

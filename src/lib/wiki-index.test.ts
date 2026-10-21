@@ -6,11 +6,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { realFs, createTempProject, readFileRaw, writeFileRaw, fileExists } from "@/test-helpers/fs-temp"
 
 vi.mock("@/commands/fs", () => realFs)
+vi.mock("./output-language", () => ({ currentOutputLanguage: () => "Korean" }))
 
 import {
   buildIndexFiles,
   collectIndexPages,
   rebuildWikiIndex,
+  refreshWikiIndex,
+  isIndexFilePath,
   CATEGORY_LABELS,
   type IndexPage,
 } from "./wiki-index"
@@ -239,5 +242,35 @@ describe("rebuildWikiIndex", () => {
     // a second rebuild with nothing changed writes nothing
     const again = await rebuildWikiIndex(tmp.path, "ko")
     expect(again).toEqual({ written: [], removed: [] })
+  })
+})
+
+describe("refreshWikiIndex", () => {
+  it("a rebuild requested during another one runs again, so the later change is listed", async () => {
+    const w = `${tmp.path}/wiki`
+    await writeFileRaw(`${w}/concepts/first.md`, "# first\n")
+    const one = refreshWikiIndex(tmp.path)
+    await writeFileRaw(`${w}/concepts/second.md`, "# second\n")
+    const two = refreshWikiIndex(tmp.path)
+    await Promise.all([one, two])
+    const list = await readFileRaw(`${w}/index/concepts.md`)
+    expect(list).toContain("[[first]]")
+    expect(list).toContain("[[second]]")
+  })
+
+  it("never throws when the wiki folder is missing", async () => {
+    await expect(refreshWikiIndex(`${tmp.path}/nope`)).resolves.toBeUndefined()
+  })
+})
+
+describe("isIndexFilePath", () => {
+  it("is true for wiki/index.md and wiki/index/** only", () => {
+    expect(isIndexFilePath("wiki/index.md")).toBe(true)
+    expect(isIndexFilePath("wiki/Index.md")).toBe(true)
+    expect(isIndexFilePath("wiki/index/concepts.md")).toBe(true)
+    expect(isIndexFilePath("wiki\\index\\concepts\\교육.md")).toBe(true)
+    expect(isIndexFilePath("wiki/concepts/index.md")).toBe(false)
+    expect(isIndexFilePath("wiki/indexing.md")).toBe(false)
+    expect(isIndexFilePath("wiki/overview.md")).toBe(false)
   })
 })

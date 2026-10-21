@@ -294,6 +294,10 @@ function App() {
     } catch (err) {
       console.error("Failed to restore ingest queue:", err)
     }
+    // Rebuild the index from the pages on disk (repairs an index left
+    // stale by an older version or by edits made while the app was
+    // closed). Not awaited; it never throws.
+    void import("@/lib/wiki-index").then(({ refreshWikiIndex }) => refreshWikiIndex(proj.path))
     // Same handshake for the dedup-merge queue.
     import("@/lib/dedup-queue").then(({ restoreQueue }) => {
       restoreQueue(proj.id, proj.path).catch((err) =>

@@ -24,6 +24,12 @@ vi.mock("@/lib/embedding", () => ({
     mockRemovePageEmbedding(projectPath, slug),
 }))
 
+const mockRefreshWikiIndex = vi.fn<(projectPath: string) => Promise<void>>(async () => {})
+vi.mock("@/lib/wiki-index", () => ({
+  isIndexFilePath: (p: string) => /^wiki\/index(\.md$|\/)/i.test(p),
+  refreshWikiIndex: (projectPath: string) => mockRefreshWikiIndex(projectPath),
+}))
+
 import { cascadeDeleteWikiPage, cascadeDeleteWikiPagesWithRefs } from "./wiki-page-delete"
 import type { FileNode } from "@/types/wiki"
 
@@ -316,7 +322,8 @@ describe("cascadeDeleteWikiPagesWithRefs", () => {
     expect(written).not.toContain("[[Alice Chen]]")
   })
 
-  it("removes the deleted page's listing line from index.md", async () => {
+  it("rebuilds the index instead of editing index.md lines", async () => {
+    mockRefreshWikiIndex.mockClear()
     const target = `${PROJECT}/wiki/entities/alice-chen.md`
     mockReadFile.mockImplementation(async (p: string) => {
       if (p === target) return `---\ntitle: "Alice Chen"\n---\nbody`
@@ -342,10 +349,9 @@ describe("cascadeDeleteWikiPagesWithRefs", () => {
 
     const indexWrite = mockWriteFile.mock.calls.find(
       (c) => c[0] === `${PROJECT}/wiki/index.md`,
-    )!
-    const written = indexWrite[1]
-    expect(written).not.toContain("[[alice-chen]]")
-    expect(written).toContain("[[bob]]")
+    )
+    expect(indexWrite).toBeUndefined()
+    expect(mockRefreshWikiIndex).toHaveBeenCalledWith(PROJECT)
   })
 
   it("drops the deleted slug from `related:` frontmatter arrays", async () => {

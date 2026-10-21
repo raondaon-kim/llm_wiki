@@ -40,3 +40,15 @@ export function buildLanguageReminder(fallbackText: string = ""): string {
   const lang = getOutputLanguage(fallbackText)
   return `REMINDER: All output must be in ${getLanguagePromptName(lang)}. Do not use any other language.`
 }
+
+/**
+ * The language the app's own generated text (such as the wiki index)
+ * should use: the configured output language, or in auto mode the
+ * system language.
+ */
+export function currentOutputLanguage(): string {
+  const configured = useWikiStore.getState().outputLanguage
+  if (configured && configured !== "auto") return configured
+  const system = typeof navigator !== "undefined" ? navigator.language : ""
+  return system || "English"
+}
