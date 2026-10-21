@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use walkdir::WalkDir;
 
@@ -252,6 +252,11 @@ fn handle_request(
     if let Some(action) = app_action(method, &parts) {
         return run_app_action(app, action);
     }
+    if method == &Method::Post {
+        if let Some(project_id) = route_index_rebuild(&parts) {
+            return handle_index_rebuild(app, project_id);
+        }
+    }
 
     match (method, parts.as_slice()) {
         (&Method::Get, ["projects"]) => handle_projects(app),
@@ -269,6 +274,27 @@ fn handle_request(
             err(501, "Chat API is not implemented in the local Rust API server yet. The existing chat/RAG pipeline currently lives in the WebView; expose it after moving the shared chat pipeline behind a backend command.")
         }
         _ => err(404, "Not found"),
+    }
+}
+
+/// `POST /projects/:id/index/rebuild` — the project id, when `parts` is that route.
+fn route_index_rebuild<'a>(parts: &[&'a str]) -> Option<&'a str> {
+    match parts {
+        ["projects", project_id, "index", "rebuild"] => Some(project_id),
+        _ => None,
+    }
+}
+
+/// The index builder lives in the WebView, so this asks it to rebuild the
+/// project's index from the pages on disk and returns at once.
+fn handle_index_rebuild(app: &AppHandle, project_id: &str) -> ApiResponse {
+    let project = match resolve_project(app, project_id) {
+        Ok(project) => project,
+        Err(e) => return err(404, e),
+    };
+    match app.emit("wiki-index://rebuild", json!({ "projectId": project.id })) {
+        Ok(()) => ok(json!({ "ok": true, "queued": true, "projectId": project.id })),
+        Err(e) => err(500, e.to_string()),
     }
 }
 
@@ -1303,6 +1329,14 @@ mod tests {
         assert_eq!(app_action(&Method::Get, &["app", "quit"]), None);
         assert_eq!(app_action(&Method::Post, &["app", "other"]), None);
         assert_eq!(app_action(&Method::Post, &["projects"]), None);
+    }
+
+    #[test]
+    fn index_rebuild_route_takes_the_project_id() {
+        assert_eq!(route_index_rebuild(&["projects", "p-1", "index", "rebuild"]), Some("p-1"));
+        assert_eq!(route_index_rebuild(&["projects", "p-1", "index"]), None);
+        assert_eq!(route_index_rebuild(&["projects", "p-1", "sources", "rescan"]), None);
+        assert_eq!(route_index_rebuild(&["projects", "p-1", "index", "rebuild", "x"]), None);
     }
 
     #[test]

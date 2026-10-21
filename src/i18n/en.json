@@ -403,6 +403,7 @@
         "endpointSearchNote": "JSON body: { query, topK?, includeContent?, queryEmbedding? }. Uses shared keyword + vector retrieval when embeddings are configured.",
         "endpointGraphNote": "?q=…&nodeType=…&limit=N — wikilinks graph derived from wiki/*.md.",
         "endpointRescanNote": "Triggers a backend rescan using your Source Watch config.",
+        "endpointIndexRebuildNote": "Rebuilds the wiki index (wiki/index.md and wiki/index/) from the pages on disk.",
         "endpointChatNote": "Not implemented yet (returns 501)."
       },
       "output": {

@@ -48,6 +48,7 @@ const ENDPOINTS: Array<{ method: "GET" | "POST"; path: string; noteKey: string }
   { method: "POST", path: "/api/v1/projects/{id}/search", noteKey: "endpointSearchNote" },
   { method: "GET", path: "/api/v1/projects/{id}/graph", noteKey: "endpointGraphNote" },
   { method: "POST", path: "/api/v1/projects/{id}/sources/rescan", noteKey: "endpointRescanNote" },
+  { method: "POST", path: "/api/v1/projects/{id}/index/rebuild", noteKey: "endpointIndexRebuildNote" },
   { method: "POST", path: "/api/v1/projects/{id}/chat", noteKey: "endpointChatNote" },
 ]
 

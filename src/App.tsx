@@ -30,6 +30,29 @@ function App() {
     startClipWatcher()
   }, [])
 
+  // The local API's POST /projects/:id/index/rebuild asks the WebView
+  // (which owns the index builder) to rebuild the open project's index.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    let cancelled = false
+    import("@/lib/wiki-index")
+      .then(({ listenIndexRebuild }) =>
+        listenIndexRebuild(() => {
+          const project = useWikiStore.getState().project
+          return project ? { id: project.id, path: project.path } : null
+        }),
+      )
+      .then((fn) => {
+        if (cancelled) fn()
+        else unlisten = fn
+      })
+      .catch((err) => console.warn("[wiki-index] rebuild listener failed:", err))
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [])
+
   // Dev-only helper for visually testing the update-banner UX.
   // Open dev tools and run:
   //   __llmwiki_testUpdateBanner()

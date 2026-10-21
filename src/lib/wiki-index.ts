@@ -12,6 +12,7 @@
  * rewrites the index.
  */
 import { deleteFile, listDirectory, readFile, writeFileAtomic } from "@/commands/fs"
+import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import type { FileNode } from "@/types/wiki"
 import { parseFrontmatter } from "./frontmatter"
 import { normalizePath } from "./path-utils"
@@ -446,4 +447,20 @@ const rebuilds = new Map<string, { again: boolean; done: Promise<void> }>()
 export function isIndexNode(node: { path: string; is_dir: boolean }): boolean {
   const p = normalizePath(node.path).toLowerCase().replace(/\/+$/, "")
   return node.is_dir ? p.endsWith("/wiki/index") : p.endsWith("/wiki/index.md")
+}
+
+/**
+ * Rebuild the open project's index when the local API asks for it
+ * (`POST /api/v1/projects/:id/index/rebuild` emits `wiki-index://rebuild`).
+ * Events naming another project are ignored.
+ */
+export async function listenIndexRebuild(
+  getProject: () => { id: string; path: string } | null,
+  refresh: (projectPath: string) => Promise<void> = refreshWikiIndex,
+): Promise<UnlistenFn> {
+  return listen<{ projectId?: string }>("wiki-index://rebuild", (event) => {
+    const project = getProject()
+    if (!project || event.payload?.projectId !== project.id) return
+    void refresh(project.path)
+  })
 }

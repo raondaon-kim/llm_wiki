@@ -403,6 +403,7 @@
         "endpointSearchNote": "JSON body：{ query, topK?, includeContent?, queryEmbedding? }。配置嵌入后使用统一的关键词 + 向量检索。",
         "endpointGraphNote": "?q=…&nodeType=…&limit=N —— 基于 wiki/*.md 的双链图谱。",
         "endpointRescanNote": "使用你的资料文件夹监控配置触发后端重新扫描。",
+        "endpointIndexRebuildNote": "根据磁盘上的页面重建 wiki 索引（wiki/index.md 和 wiki/index/）。",
         "endpointChatNote": "尚未实现（返回 501）。"
       },
       "output": {
