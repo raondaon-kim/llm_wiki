@@ -289,6 +289,7 @@ export async function deleteSourceFiles(
     reason: options.logReason ?? (options.fileAlreadyDeleted ? "external delete" : "delete"),
     deletedWikiCount: deletedWikiPaths.length,
     keptWikiCount: rewrittenSourcePages,
+    replaced: options.keepMultiSourcePages === true && options.keepLinksToDeleted === true,
   })
 
   if (skippedPages > 0) {
@@ -412,7 +413,7 @@ async function getUniqueDestPath(dir: string, fileName: string): Promise<string>
 async function appendSourceDeleteLog(
   projectPath: string,
   fileNames: string | string[],
-  detail: { reason: string; deletedWikiCount: number; keptWikiCount: number },
+  detail: { reason: string; deletedWikiCount: number; keptWikiCount: number; replaced?: boolean },
 ): Promise<void> {
   try {
     const names = Array.isArray(fileNames) ? fileNames : [fileNames]
@@ -421,7 +422,12 @@ async function appendSourceDeleteLog(
     const date = new Date().toISOString().slice(0, 10)
     const subject = names.length === 1 ? names[0] : `${names.length} source files`
     const listed = names.length === 1 ? "" : `\n\nSources:\n${names.map((name) => `- ${name}`).join("\n")}`
-    const logEntry = `\n## [${date}] ${detail.reason} | ${subject}\n\nDeleted ${names.length} source file${names.length === 1 ? "" : "s"} and ${detail.deletedWikiCount} wiki pages.${detail.keptWikiCount > 0 ? ` ${detail.keptWikiCount} shared pages kept (have other sources).` : ""}${listed}\n`
+    const pages = `${detail.deletedWikiCount} wiki page${detail.deletedWikiCount === 1 ? "" : "s"}`
+    // a changed source keeps its file: only the pages it alone produced go, before it is ingested again
+    const what = detail.replaced
+      ? `The source changed: removed the ${pages} only it produced; it will be ingested again.`
+      : `Deleted ${names.length} source file${names.length === 1 ? "" : "s"} and ${pages}.${detail.keptWikiCount > 0 ? ` ${detail.keptWikiCount} shared pages kept (have other sources).` : ""}`
+    const logEntry = `\n## [${date}] ${detail.reason} | ${subject}\n\n${what}${listed}\n`
     await writeFile(logPath, logContent.trimEnd() + logEntry)
   } catch (err) {
     console.warn("[source-lifecycle] failed to append delete log:", err)

@@ -274,3 +274,30 @@ describe("isIndexFilePath", () => {
     expect(isIndexFilePath("wiki/overview.md")).toBe(false)
   })
 })
+
+describe("index file names never collide", () => {
+  it("a group named like a numbered part (교육-2) does not overwrite part 2 of 교육", () => {
+    const pages: IndexPage[] = []
+    // 교육: big enough for two parts; 교육-2: its own group
+    for (let i = 0; i < 196; i++) pages.push(page("concepts", `edu-${i}`, { tags: ["교육"], title: "제목".repeat(20) }))
+    for (let i = 0; i < 6; i++) pages.push(page("concepts", `edu2-${i}`, { tags: ["교육-2"] }))
+    const files = buildIndexFiles(pages, "ko")
+    expect(files.has("wiki/index/concepts/교육-2.md")).toBe(true) // part 2 of 교육
+    const listed = [...files.entries()]
+      .filter(([k]) => k.startsWith("wiki/index/concepts/"))
+      .flatMap(([, v]) => [...v.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]))
+    expect(new Set(listed).size).toBe(pages.length)
+  })
+
+  it("a category folder named like a numbered part (sources-2) keeps its own list", () => {
+    const pages: IndexPage[] = []
+    for (let i = 0; i < 190; i++) pages.push(page("sources", `s${i}`, { title: "제목".repeat(30), summary: "요약".repeat(60) }))
+    pages.push(page("sources-2", "lonely"))
+    const files = buildIndexFiles(pages, "ko")
+    const listed = [...files.entries()]
+      .filter(([k]) => k.startsWith("wiki/index/"))
+      .flatMap(([, v]) => [...v.matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]))
+    expect(listed).toContain("lonely")
+    expect(new Set(listed).size).toBe(pages.length)
+  })
+})

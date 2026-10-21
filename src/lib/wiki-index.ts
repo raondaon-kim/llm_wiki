@@ -207,7 +207,15 @@ function fileKey(name: string): string {
     .replace(/^[-.]+|[-.]+$/g, "")
     .slice(0, 60)
   if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(key)) key = `_${key}`
-  return key
+  return partSafe(key)
+}
+
+/**
+ * A name ending in "-<digits>" would collide with a numbered part file
+ * (`<base>-2.md`), so it gets a trailing underscore.
+ */
+function partSafe(name: string): string {
+  return /-\d+$/.test(name) ? `${name}_` : name
 }
 
 /**
@@ -304,7 +312,7 @@ function buildTop(byCat: Map<string, IndexPage[]>, total: number, lang: string):
       const { name, desc } = label(category, lang)
       const last = pages[0]?.updated
       out.push("", `## ${name} (${pages.length})`)
-      const facts = [withDesc ? desc : "", last ? `${w.updated} ${last}` : "", `${w.list}: index/${category}.md`]
+      const facts = [withDesc ? desc : "", last ? `${w.updated} ${last}` : "", `${w.list}: index/${partSafe(category)}.md`]
       out.push(facts.filter(Boolean).join(" · "))
       for (const p of pages.slice(0, recent)) out.push(`- [[${p.slug}]] — ${clip(p.title, 40)}`)
     }
@@ -338,16 +346,16 @@ export function buildIndexFiles(pages: IndexPage[], lang: string): Map<string, s
     const { name, desc } = label(category, lang)
     const head = (part: string) => [`# ${name} (${list.length})${part}`, ...(desc ? [desc] : [])]
     if (list.length <= SPLIT_OVER || PARTS_ONLY.has(category)) {
-      writeParts(out, `wiki/index/${category}`, head, list.map(pageLine), w)
+      writeParts(out, `wiki/index/${partSafe(category)}`, head, list.map(pageLine), w)
       continue
     }
     const groups = groupPages(category, list, lang)
-    const lines = groups.map((g) => `- ${g.label} (${g.pages.length}) — index/${category}/${g.key}.md`)
-    out.set(`wiki/index/${category}.md`, `${[...head(""), "", w.groups, ...lines].join("\n")}\n`)
+    const lines = groups.map((g) => `- ${g.label} (${g.pages.length}) — index/${partSafe(category)}/${g.key}.md`)
+    out.set(`wiki/index/${partSafe(category)}.md`, `${[...head(""), "", w.groups, ...lines].join("\n")}\n`)
     for (const g of groups) {
       writeParts(
         out,
-        `wiki/index/${category}/${g.key}`,
+        `wiki/index/${partSafe(category)}/${g.key}`,
         (part) => [`# ${name} › ${clip(g.label, 60)} (${g.pages.length})${part}`],
         g.pages.map(pageLine),
         w,

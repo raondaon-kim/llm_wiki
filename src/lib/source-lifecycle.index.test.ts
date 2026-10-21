@@ -91,3 +91,20 @@ describe("GenOffice's own pages are never another source's pages", () => {
     expect(await readFileRaw(`${tmp.path}/wiki/work/보고서-업무.md`)).toBe(genofficePage)
   })
 })
+
+describe("the log entry of a changed source", () => {
+  it("says the source was kept and its pages removed for the re-ingest", async () => {
+    await writeFileRaw(`${tmp.path}/wiki/log.md`, "# Wiki Log\n")
+    await deleteSourceFiles(tmp.path, ["raw/sources/gone.md"], {
+      fileAlreadyDeleted: true,
+      keepMultiSourcePages: true,
+      keepLinksToDeleted: true,
+      logReason: "source changed",
+    })
+    const log = await readFileRaw(`${tmp.path}/wiki/log.md`)
+    expect(log).toContain("source changed | gone.md")
+    expect(log).not.toMatch(/Deleted 1 source file/)
+    expect(log).toContain("1 wiki page")
+    expect(log).toMatch(/ingested again/)
+  })
+})

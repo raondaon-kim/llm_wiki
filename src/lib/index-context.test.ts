@@ -90,8 +90,10 @@ describe("trimIndexByRelevance", () => {
   })
 
   it("keeps ## lines and lines with query tokens, and marks the cut", () => {
-    const raw = ["# Index", "## Concepts", "- [[attention]] — attention", "- [[rope]] — rotary", "## Entities", "- [[bob]] — designer"].join("\n")
-    const out = trimIndexByRelevance(raw, "rotary embedding", 60)
+    const filler = Array.from({ length: 10 }, (_, i) => `- [[x${i}]] — unrelated page ${i}`)
+    const raw = ["# Index", "## Concepts", "- [[attention]] — attention", "- [[rope]] — rotary", ...filler, "## Entities", "- [[bob]] — designer"].join("\n")
+    const out = trimIndexByRelevance(raw, "rotary embedding", 120)
+    expect(out.length).toBeLessThanOrEqual(120)
     expect(out).toContain("## Concepts")
     expect(out).toContain("## Entities")
     expect(out).toContain("[[rope]]")
@@ -116,5 +118,14 @@ describe("prompts", () => {
     expect(run.length).toBeLessThanOrEqual(6000)
     expect(capOverview(overview).length).toBeLessThanOrEqual(6000)
     expect(capOverview("short")).toBe("short")
+  })
+})
+
+describe("trimIndexByRelevance budget", () => {
+  it("never returns more than the budget, trim mark included", () => {
+    const raw = ["# Index", "## A", ...Array.from({ length: 50 }, (_, i) => `- [[p${i}]] — rotary page ${i}`)].join("\n")
+    for (const budget of [60, 200, 500]) {
+      expect(trimIndexByRelevance(raw, "rotary", budget).length).toBeLessThanOrEqual(budget)
+    }
   })
 })

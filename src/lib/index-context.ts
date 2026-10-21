@@ -21,6 +21,9 @@ const HANGUL = /[가-힣]/
  */
 export function trimIndexByRelevance(raw: string, query: string, budgetChars: number): string {
   if (raw.length <= budgetChars) return raw
+  // the cut is marked, and the mark counts against the budget too
+  const limit = budgetChars - TRIM_MARK.length
+  if (limit <= 0) return ""
   const tokens = tokenizeQuery(query)
   const kept: string[] = []
   let size = 0
@@ -28,7 +31,7 @@ export function trimIndexByRelevance(raw: string, query: string, budgetChars: nu
     const isHeader = line.startsWith("##")
     const lower = line.toLowerCase()
     const isRelevant = tokens.some((t) => lower.includes(t))
-    if ((isHeader || isRelevant) && size + line.length + 1 <= budgetChars) {
+    if ((isHeader || isRelevant) && size + line.length + 1 <= limit) {
       kept.push(line)
       size += line.length + 1
     }
