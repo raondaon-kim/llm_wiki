@@ -170,10 +170,26 @@ export async function deleteSourceFile(
   }
 }
 
+/**
+ * Options for deleteSourceFiles. The two `keep…` options together make
+ * the "replace" mode used when a source changed and is about to be
+ * ingested again: only the pages whose single source it is go, without
+ * touching pages other sources share and without stripping links to the
+ * removed pages (the re-ingest normally recreates the same slugs).
+ */
+export interface DeleteSourceOptions {
+  fileAlreadyDeleted?: boolean
+  logReason?: string
+  /** Leave pages that other sources also use exactly as they are. */
+  keepMultiSourcePages?: boolean
+  /** Delete pages without stripping `[[links]]` to them elsewhere. */
+  keepLinksToDeleted?: boolean
+}
+
 export async function deleteSourceFiles(
   projectPath: string,
   sourcePaths: string[],
-  options: { fileAlreadyDeleted?: boolean; logReason?: string } = {},
+  options: DeleteSourceOptions = {},
 ): Promise<DeleteSourcesResult> {
   const pp = normalizePath(projectPath)
   const normalizedSources = sourcePaths.map(normalizePath)
@@ -239,6 +255,8 @@ export async function deleteSourceFiles(
 
     if (survivors.length === 0) {
       pagesToDelete.push(file.path)
+    } else if (options.keepMultiSourcePages) {
+      continue
     } else {
       try {
         await writeFile(file.path, writeSources(content, survivors))
@@ -250,7 +268,18 @@ export async function deleteSourceFiles(
   }
 
   let deletedWikiPaths: string[] = []
-  if (pagesToDelete.length > 0) {
+  if (pagesToDelete.length > 0 && options.keepLinksToDeleted) {
+    const { cascadeDeleteWikiPage } = await import("@/lib/wiki-page-delete")
+    for (const page of pagesToDelete) {
+      try {
+        await cascadeDeleteWikiPage(pp, page)
+        deletedWikiPaths.push(page)
+      } catch (err) {
+        console.warn(`[source-lifecycle] failed to delete ${page}:`, err)
+      }
+    }
+    await refreshWikiIndex(pp)
+  } else if (pagesToDelete.length > 0) {
     const { cascadeDeleteWikiPagesWithRefs } = await import("@/lib/wiki-page-delete")
     const result = await cascadeDeleteWikiPagesWithRefs(pp, pagesToDelete)
     deletedWikiPaths = result.deletedPaths

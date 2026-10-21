@@ -81,6 +81,8 @@ const mocks = vi.hoisted(() => {
     findRelatedWikiPages: vi.fn(async () => []),
     enqueueBatch: vi.fn(async () => []),
     removeFromIngestCache: vi.fn(async () => undefined),
+    checkIngestCache: vi.fn(async (): Promise<string[] | null> => null),
+    cascadeDeleteWikiPage: vi.fn(async () => undefined),
     removePageEmbedding: vi.fn(async () => undefined),
     cascadeDeleteWikiPagesWithRefs: vi.fn(async () => ({
       deletedPaths: [] as string[],
@@ -114,6 +116,7 @@ vi.mock("@/lib/ingest-queue", () => ({
 
 vi.mock("@/lib/ingest-cache", () => ({
   removeFromIngestCache: mocks.removeFromIngestCache,
+  checkIngestCache: mocks.checkIngestCache,
 }))
 
 vi.mock("@/lib/embedding", () => ({
@@ -122,6 +125,7 @@ vi.mock("@/lib/embedding", () => ({
 
 vi.mock("@/lib/wiki-page-delete", () => ({
   cascadeDeleteWikiPagesWithRefs: mocks.cascadeDeleteWikiPagesWithRefs,
+  cascadeDeleteWikiPage: mocks.cascadeDeleteWikiPage,
 }))
 
 describe("project file sync", () => {
@@ -147,6 +151,8 @@ describe("project file sync", () => {
     mocks.findRelatedWikiPages.mockImplementation(async () => [])
     mocks.enqueueBatch.mockImplementation(async () => [])
     mocks.removeFromIngestCache.mockImplementation(async () => undefined)
+    mocks.checkIngestCache.mockImplementation(async () => null)
+    mocks.cascadeDeleteWikiPage.mockImplementation(async () => undefined)
     mocks.removePageEmbedding.mockImplementation(async () => undefined)
     mocks.cascadeDeleteWikiPagesWithRefs.mockImplementation(async () => ({
       deletedPaths: [] as string[],
@@ -639,5 +645,108 @@ describe("project file sync", () => {
       expect(mocks.cascadeDeleteWikiPagesWithRefs).toHaveBeenCalledTimes(1)
     })
     expect(mocks.listDirectory.mock.calls.filter(([path]) => path === "/tmp/a/wiki")).toHaveLength(1)
+  })
+
+  describe("a changed source is rewritten", () => {
+    const wikiTree = [
+      {
+        name: "sources",
+        path: "/tmp/a/wiki/sources",
+        is_dir: true,
+        children: [{ name: "report.md", path: "/tmp/a/wiki/sources/report.md", is_dir: false }],
+      },
+      {
+        name: "concepts",
+        path: "/tmp/a/wiki/concepts",
+        is_dir: true,
+        children: [{ name: "shared.md", path: "/tmp/a/wiki/concepts/shared.md", is_dir: false }],
+      },
+    ]
+    const pages: Record<string, string> = {
+      "/tmp/a/wiki/sources/report.md": "---\nsources: [report.docx]\n---\n# Report\n",
+      "/tmp/a/wiki/concepts/shared.md": "---\nsources: [report.docx, other.pdf]\n---\n# Shared\n",
+      "/tmp/a/raw/sources/report.docx": "new text of the report",
+      "/tmp/a/wiki/log.md": "# Wiki Log\n",
+    }
+
+    async function emitChange(kind: "created" | "modified") {
+      vi.useFakeTimers()
+      const { startProjectFileSync } = await import("@/lib/project-file-sync")
+      const { useWikiStore } = await import("@/stores/wiki-store")
+      const project = { id: "A", name: "A", path: "/tmp/a" }
+      useWikiStore.getState().setProject(project)
+      mocks.listDirectory.mockImplementation(async (path?: string) => (path === "/tmp/a/wiki" ? wikiTree : []))
+      mocks.readFile.mockImplementation(async (path?: string) => pages[path ?? ""] ?? "")
+      void startProjectFileSync(project)
+      await vi.waitFor(() => {
+        expect(mocks.listen).toHaveBeenCalledTimes(2)
+      })
+      mocks.emit("file-sync://changed", {
+        projectId: "A",
+        tasks: [
+          {
+            id: "t1",
+            projectId: "A",
+            path: "raw/sources/report.docx",
+            kind,
+            status: "done",
+            createdAt: 1,
+            updatedAt: 1,
+            retryCount: 0,
+            needsRerun: false,
+          },
+        ],
+      })
+      await vi.advanceTimersByTimeAsync(250)
+    }
+
+    it("a modified raw source first removes the pages whose only source it is, keeps shared pages unchanged, then is queued for ingest", async () => {
+      await emitChange("modified")
+      await vi.waitFor(() => {
+        expect(mocks.enqueueBatch).toHaveBeenCalledWith("A", [
+          { sourcePath: "raw/sources/report.docx", folderContext: "" },
+        ])
+      })
+      expect(mocks.cascadeDeleteWikiPage).toHaveBeenCalledWith("/tmp/a", "/tmp/a/wiki/sources/report.md")
+      expect(mocks.cascadeDeleteWikiPage).not.toHaveBeenCalledWith("/tmp/a", "/tmp/a/wiki/concepts/shared.md")
+      // shared page untouched; links to the replaced pages are kept for the re-ingest
+      const writes = mocks.writeFile.mock.calls as unknown as Array<[string, string]>
+      expect(writes.some(([p]) => p === "/tmp/a/wiki/concepts/shared.md")).toBe(false)
+      expect(mocks.cascadeDeleteWikiPagesWithRefs).not.toHaveBeenCalled()
+      expect(mocks.removeFromIngestCache).toHaveBeenCalledWith("/tmp/a", "report.docx")
+      expect(mocks.cascadeDeleteWikiPage.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.enqueueBatch.mock.invocationCallOrder[0],
+      )
+    })
+
+    it("a modified source whose content still matches its last ingest keeps its pages", async () => {
+      mocks.checkIngestCache.mockImplementation(async () => ["wiki/sources/report.md"])
+      await emitChange("modified")
+      await vi.waitFor(() => {
+        expect(mocks.enqueueBatch).toHaveBeenCalledTimes(1)
+      })
+      expect(mocks.checkIngestCache).toHaveBeenCalledWith("/tmp/a", "report.docx", "new text of the report")
+      expect(mocks.cascadeDeleteWikiPage).not.toHaveBeenCalled()
+      expect(mocks.removeFromIngestCache).not.toHaveBeenCalled()
+    })
+
+    it("created sources are queued as before", async () => {
+      await emitChange("created")
+      await vi.waitFor(() => {
+        expect(mocks.enqueueBatch).toHaveBeenCalledTimes(1)
+      })
+      expect(mocks.cascadeDeleteWikiPage).not.toHaveBeenCalled()
+      expect(mocks.checkIngestCache).not.toHaveBeenCalled()
+    })
+
+    it("a failure while removing the old pages still queues the source for ingest", async () => {
+      mocks.cascadeDeleteWikiPage.mockImplementation(async () => {
+        throw new Error("locked")
+      })
+      await emitChange("modified")
+      await vi.waitFor(() => {
+        expect(mocks.enqueueBatch).toHaveBeenCalledTimes(1)
+      })
+    })
   })
 })

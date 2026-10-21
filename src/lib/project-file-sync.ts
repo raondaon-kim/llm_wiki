@@ -19,6 +19,7 @@ import {
   isIngestableSourcePath,
 } from "@/lib/source-lifecycle"
 import { isPathAllowedBySourceWatch, normalizeSourceWatchConfig } from "@/lib/source-watch-config"
+import { checkIngestCache } from "@/lib/ingest-cache"
 
 let unlistenQueue: UnlistenFn | null = null
 let unlistenChanged: UnlistenFn | null = null
@@ -181,10 +182,52 @@ async function enqueueRawSourceChanges(project: WikiProject, tasks: FileChangeTa
 
   if (paths.length === 0) return
 
+  // A changed source is rewritten, not merged: drop the pages it alone
+  // produced before it is ingested again.
+  const modified = new Set(
+    tasks
+      .filter((task) => task.projectId === project.id && task.kind === "modified")
+      .map((task) => normalizePath(task.path)),
+  )
+  for (const rel of paths) {
+    if (modified.has(normalizePath(rel))) await clearPagesOfChangedSource(project.path, rel)
+  }
+
   try {
     await enqueueSourceIngest(project, paths, useWikiStore.getState().llmConfig)
   } catch (err) {
     console.error("[file-sync] failed to enqueue raw source ingest:", err)
+  }
+}
+
+/**
+ * Before a changed source is ingested again, delete the pages whose only
+ * source it is; pages other sources share stay as they are, and links to
+ * the deleted pages are kept because the re-ingest recreates them. A
+ * "modified" event whose content still matches the last ingest (a touch,
+ * a re-save) deletes nothing. Never throws: the re-ingest must still be
+ * queued.
+ */
+async function clearPagesOfChangedSource(projectPath: string, relativePath: string): Promise<void> {
+  const pp = normalizePath(projectPath)
+  const rel = normalizePath(relativePath)
+  const fileName = rel.split("/").pop() ?? ""
+  if (!fileName) return
+  try {
+    const content = await readFile(`${pp}/${rel}`)
+    if ((await checkIngestCache(pp, fileName, content)) !== null) return
+  } catch {
+    // unreadable now; treat as changed
+  }
+  try {
+    await deleteSourceFiles(pp, [rel], {
+      fileAlreadyDeleted: true,
+      keepMultiSourcePages: true,
+      keepLinksToDeleted: true,
+      logReason: "source changed",
+    })
+  } catch (err) {
+    console.warn(`[file-sync] failed to clear pages of changed source ${rel}:`, err)
   }
 }
 
