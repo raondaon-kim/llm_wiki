@@ -1094,6 +1094,9 @@ fn build_graph(project_path: &str) -> Result<(Vec<ApiGraphNode>, Vec<ApiGraphEdg
         {
             continue;
         }
+        if commands::file_sync::is_index_rel(&relative_to_project(project_path, entry.path())) {
+            continue; // index files are not pages
+        }
         let content = match fs::read_to_string(entry.path()) {
             Ok(content) => content,
             Err(_) => continue,

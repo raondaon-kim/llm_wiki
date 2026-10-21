@@ -1055,8 +1055,17 @@ fn normalize_rel_path(path: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
+/// True for the app-built index files: `wiki/index.md` and `wiki/index/**`
+/// (project-relative). They are not pages: search, the graph and the
+/// watcher skip them, and only the index builder writes them.
+pub(crate) fn is_index_rel(rel: &str) -> bool {
+    let lower = rel.replace('\\', "/").to_lowercase();
+    let lower = lower.trim_start_matches("./").trim_start_matches('/');
+    lower == "wiki/index.md" || lower.starts_with("wiki/index/")
+}
+
 fn should_watch_rel(rel: &str, rules: &SourceWatchRules) -> bool {
-    if rel.is_empty() {
+    if rel.is_empty() || is_index_rel(rel) {
         return false;
     }
     let lower = rel.to_lowercase();
@@ -1623,7 +1632,27 @@ mod tests {
             &rules
         ));
         assert!(!should_watch_rel("raw/sources/report.private.md", &rules));
-        assert!(should_watch_rel("wiki/index.md", &rules));
+        assert!(should_watch_rel("wiki/concepts/a.md", &rules));
+    }
+
+    #[test]
+    fn index_tree_is_not_watched_or_searched() {
+        assert!(is_index_rel("wiki/index.md"));
+        assert!(is_index_rel("wiki/Index.md"));
+        assert!(is_index_rel("wiki/index/concepts.md"));
+        assert!(is_index_rel("wiki\\index\\concepts\\교육.md"));
+        assert!(!is_index_rel("wiki/concepts/index.md"));
+        assert!(!is_index_rel("wiki/indexing.md"));
+        assert!(!is_index_rel("wiki/overview.md"));
+
+        let config = normalize_source_watch_config(None);
+        let rules = SourceWatchRules::new(&config);
+        // a rebuild deleting wiki/index/concepts.md must not look like a
+        // deleted page "concepts" (that would strip every [[concepts]] link)
+        assert!(!should_watch_rel("wiki/index.md", &rules));
+        assert!(!should_watch_rel("wiki/index/concepts.md", &rules));
+        assert!(!should_watch_rel("wiki/index/work/2026.md", &rules));
+        assert!(should_watch_rel("wiki/concepts/a.md", &rules));
     }
 
     #[test]

@@ -150,6 +150,13 @@ pub async fn search_project_inner(
             {
                 continue;
             }
+            // The index files list every page, so they would match every
+            // query; they are not pages.
+            if let Ok(rel) = entry.path().strip_prefix(Path::new(&project_path)) {
+                if super::file_sync::is_index_rel(&rel.to_string_lossy()) {
+                    continue;
+                }
+            }
             searched_files += 1;
             if searched_files > MAX_SEARCH_FILES {
                 eprintln!(

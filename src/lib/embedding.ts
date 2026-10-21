@@ -25,6 +25,7 @@ import { invoke } from "@tauri-apps/api/core"
 import type { EmbeddingConfig } from "@/stores/wiki-store"
 import type { FileNode } from "@/types/wiki"
 import { normalizePath } from "@/lib/path-utils"
+import { isIndexNode } from "@/lib/wiki-index"
 import { getHttpFetch, isFetchNetworkError } from "@/lib/tauri-fetch"
 import { chunkMarkdown, type Chunk } from "@/lib/text-chunker"
 
@@ -414,6 +415,7 @@ export async function embedAllPages(
   const mdFiles: { id: string; path: string }[] = []
   function walk(nodes: FileNode[]) {
     for (const node of nodes) {
+      if (isIndexNode(node)) continue // index files are not pages
       if (node.is_dir && node.children) {
         walk(node.children)
       } else if (!node.is_dir && node.name.endsWith(".md")) {

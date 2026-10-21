@@ -647,6 +647,39 @@ describe("project file sync", () => {
     expect(mocks.listDirectory.mock.calls.filter(([path]) => path === "/tmp/a/wiki")).toHaveLength(1)
   })
 
+  it("a deleted index file is not treated as a deleted page (no link stripping)", async () => {
+    vi.useFakeTimers()
+    const { startProjectFileSync } = await import("@/lib/project-file-sync")
+    const { useWikiStore } = await import("@/stores/wiki-store")
+    const project = { id: "A", name: "A", path: "/tmp/a" }
+    useWikiStore.getState().setProject(project)
+    void startProjectFileSync(project)
+    await vi.waitFor(() => {
+      expect(mocks.listen).toHaveBeenCalledTimes(2)
+    })
+    mocks.emit("file-sync://changed", {
+      projectId: "A",
+      tasks: ["wiki/index/entities.md", "wiki/index/concepts/교육.md", "wiki/index.md"].map((path, i) => ({
+        id: `t${i}`,
+        projectId: "A",
+        path,
+        kind: "deleted",
+        status: "done",
+        createdAt: 1,
+        updatedAt: 1,
+        retryCount: 0,
+        needsRerun: false,
+      })),
+    })
+    await vi.advanceTimersByTimeAsync(250)
+    await vi.waitFor(() => {
+      expect(mocks.listDirectory).toHaveBeenCalledWith("/tmp/a")
+    })
+    // cleanupDeletedWikiPages would scan /tmp/a/wiki to strip [[entities]] links
+    expect(mocks.listDirectory).not.toHaveBeenCalledWith("/tmp/a/wiki")
+    expect(mocks.removePageEmbedding).not.toHaveBeenCalled()
+  })
+
   describe("a changed source is rewritten", () => {
     const wikiTree = [
       {

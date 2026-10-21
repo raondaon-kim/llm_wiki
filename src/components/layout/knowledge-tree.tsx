@@ -9,6 +9,7 @@ import { readFile, listDirectory } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { normalizePath } from "@/lib/path-utils"
 import { cascadeDeleteWikiPagesWithRefs } from "@/lib/wiki-page-delete"
+import { isIndexNode } from "@/lib/wiki-index"
 
 interface WikiPageInfo {
   path: string
@@ -406,6 +407,7 @@ function DeleteButton({
 function flattenMdFiles(nodes: FileNode[]): FileNode[] {
   const files: FileNode[] = []
   for (const node of nodes) {
+    if (isIndexNode(node)) continue // index files are not pages
     if (node.is_dir && node.children) {
       files.push(...flattenMdFiles(node.children))
     } else if (!node.is_dir && node.name.endsWith(".md")) {

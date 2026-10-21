@@ -5,6 +5,7 @@ import type { FileNode } from "@/types/wiki"
 import { useActivityStore } from "@/stores/activity-store"
 import { getFileName, getRelativePath, normalizePath } from "@/lib/path-utils"
 import { buildLanguageDirective } from "@/lib/output-language"
+import { isIndexNode } from "@/lib/wiki-index"
 
 export interface LintResult {
   type: "orphan" | "broken-link" | "no-outlinks" | "semantic"
@@ -19,6 +20,7 @@ export interface LintResult {
 function flattenMdFiles(nodes: FileNode[]): FileNode[] {
   const files: FileNode[] = []
   for (const node of nodes) {
+    if (isIndexNode(node)) continue // index files are not pages
     if (node.is_dir && node.children) {
       files.push(...flattenMdFiles(node.children))
     } else if (!node.is_dir && node.name.endsWith(".md")) {

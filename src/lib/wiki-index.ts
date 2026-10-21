@@ -436,3 +436,14 @@ export function refreshWikiIndex(projectPath: string): Promise<void> {
 }
 
 const rebuilds = new Map<string, { again: boolean; done: Promise<void> }>()
+
+/**
+ * True for a node of a `listDirectory(<project>/wiki)` tree that is index,
+ * not a page: the `wiki/index` folder or the top `wiki/index.md`. Walkers
+ * skip it. Matching the node (not a substring of any path) keeps a project
+ * that itself sits under a folder named `wiki/index` working.
+ */
+export function isIndexNode(node: { path: string; is_dir: boolean }): boolean {
+  const p = normalizePath(node.path).toLowerCase().replace(/\/+$/, "")
+  return node.is_dir ? p.endsWith("/wiki/index") : p.endsWith("/wiki/index.md")
+}

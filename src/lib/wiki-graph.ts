@@ -2,6 +2,7 @@ import { readFile, listDirectory } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { buildRetrievalGraph, calculateRelevance } from "./graph-relevance"
 import { normalizePath } from "@/lib/path-utils"
+import { isIndexNode } from "@/lib/wiki-index"
 import Graph from "graphology"
 import louvain from "graphology-communities-louvain"
 
@@ -117,6 +118,7 @@ const WIKILINK_REGEX = /\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]/g
 function flattenMdFiles(nodes: FileNode[]): FileNode[] {
   const files: FileNode[] = []
   for (const node of nodes) {
+    if (isIndexNode(node)) continue // index files are not pages
     if (node.is_dir && node.children) {
       files.push(...flattenMdFiles(node.children))
     } else if (!node.is_dir && node.name.endsWith(".md")) {

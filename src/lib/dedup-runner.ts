@@ -19,7 +19,7 @@ import {
   type MergeResult,
 } from "./dedup"
 import { loadNotDuplicates } from "./dedup-storage"
-import { refreshWikiIndex } from "./wiki-index"
+import { isIndexNode, refreshWikiIndex } from "./wiki-index"
 
 /**
  * Wrap streamChat into the (system, user, signal) → string shape
@@ -62,6 +62,7 @@ export function buildDedupLlmCall(llmConfig: LlmConfig): DedupLlmCall {
 /** Walk a FileNode tree, yielding every .md file under a given prefix. */
 function* walkMd(nodes: FileNode[], prefix: string): Generator<FileNode> {
   for (const node of nodes) {
+    if (isIndexNode(node)) continue // index files are not pages
     if (node.is_dir) {
       if (node.children) yield* walkMd(node.children, prefix)
       continue

@@ -1,6 +1,7 @@
 import { readFile, listDirectory } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { normalizePath } from "@/lib/path-utils"
+import { isIndexNode } from "@/lib/wiki-index"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,6 +56,7 @@ let cachedGraph: RetrievalGraph | null = null
 function flattenMdFiles(nodes: readonly FileNode[]): FileNode[] {
   const files: FileNode[] = []
   for (const node of nodes) {
+    if (isIndexNode(node)) continue // index files are not pages
     if (node.is_dir && node.children) {
       files.push(...flattenMdFiles(node.children))
     } else if (!node.is_dir && node.name.endsWith(".md")) {

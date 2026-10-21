@@ -20,6 +20,7 @@ import {
 } from "@/lib/source-lifecycle"
 import { isPathAllowedBySourceWatch, normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 import { checkIngestCache } from "@/lib/ingest-cache"
+import { isIndexFilePath } from "@/lib/wiki-index"
 
 let unlistenQueue: UnlistenFn | null = null
 let unlistenChanged: UnlistenFn | null = null
@@ -282,6 +283,8 @@ function isWikiPageForCascade(relativePath: string): boolean {
   const path = normalizePath(relativePath)
   const lower = path.toLowerCase()
   if (!lower.startsWith("wiki/") || !lower.endsWith(".md")) return false
+  // index files are rebuilt, never pages whose links must be stripped
+  if (isIndexFilePath(lower)) return false
   const name = lower.split("/").pop()
   if (name === "index.md" || name === "log.md" || name === "overview.md") {
     return false
