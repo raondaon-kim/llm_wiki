@@ -9,7 +9,7 @@ import { realFs, createTempProject, readFileRaw, writeFileRaw, fileExists } from
 
 vi.mock("@/commands/fs", () => realFs)
 
-type Reply = { text: string; stop?: "length" | "stop"; error?: string }
+type Reply = { text?: string; stop?: "length" | "stop"; error?: string }
 let replies: Reply[] = []
 const budgets: number[] = []
 vi.mock("./llm-client", () => ({
@@ -20,7 +20,7 @@ vi.mock("./llm-client", () => ({
       cb.onError(new Error(r.error))
       return
     }
-    cb.onToken(r.text)
+    cb.onToken(r.text ?? "")
     cb.onStopReason?.(r.stop ?? "stop")
     cb.onDone()
   }),
@@ -81,7 +81,11 @@ afterEach(async () => {
 })
 
 const ingest = () => autoIngest(tmp.path, `${tmp.path}/raw/sources/rope-paper.md`, { ...LLM })
-const lastDetail = () => useActivityStore.getState().items.at(-1)?.detail ?? ""
+const lastItem = () => {
+  const items = useActivityStore.getState().items
+  return items[items.length - 1]
+}
+const lastDetail = () => lastItem()?.detail ?? ""
 
 describe("ingest asks again with a larger budget after the token limit", () => {
   it("a generation cut at the limit is asked again with twice the budget and the full answer is written", async () => {
@@ -115,7 +119,7 @@ describe("ingest asks again with a larger budget after the token limit", () => {
     const written = await ingest()
     expect(budgets).toEqual([8192, 16384, 32768])
     expect(written.some((p) => p.endsWith("wiki/concepts/rope.md"))).toBe(true)
-    expect(useActivityStore.getState().items.at(-1)?.status).not.toBe("error")
+    expect(lastItem()?.status).not.toBe("error")
   })
 
   it("still cut at the largest budget: complete pages are written and the activity says the output was cut", async () => {
