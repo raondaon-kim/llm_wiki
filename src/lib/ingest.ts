@@ -51,6 +51,58 @@ function resolveCaptionConfig(
 import { buildLanguageDirective } from "@/lib/output-language"
 import { detectLanguage } from "@/lib/detect-language"
 import { sameScriptFamily } from "@/lib/language-metadata"
+import type { StopReason } from "@/lib/stop-reason"
+import type { ChatMessage } from "@/lib/llm-providers"
+
+/**
+ * max_tokens per attempt. Reasoning models (DeepSeek, Qwen, Kimi …) spend
+ * hidden thinking tokens inside this budget, so an answer can stop at the
+ * limit with its last pages missing. A stop at the limit asks again with the
+ * next, larger budget. The first budget is unchanged, so models with a
+ * 16K output cap still work; one that refuses a larger budget keeps the
+ * earlier answer.
+ */
+export const ANALYSIS_BUDGETS = [8192, 16384, 32768]
+export const GENERATION_BUDGETS = [16384, 32768, 65536]
+
+interface BudgetRun {
+  text: string
+  /** still stopped at the token limit on the last attempt that answered */
+  truncated: boolean
+  /** the first attempt failed (later failures keep the earlier answer) */
+  error?: Error
+}
+
+async function streamWithBudget(
+  llmConfig: LlmConfig,
+  messages: ChatMessage[],
+  budgets: number[],
+  signal?: AbortSignal,
+): Promise<BudgetRun> {
+  let previous: BudgetRun | null = null
+  for (const max_tokens of budgets) {
+    let text = ""
+    let stop = null as StopReason | null
+    let error: Error | undefined
+    await streamChat(
+      llmConfig,
+      messages,
+      {
+        onToken: (token) => { text += token },
+        onStopReason: (reason) => { stop = reason },
+        onDone: () => {},
+        onError: (err) => { error = err },
+      },
+      signal,
+      { temperature: 0.1, reasoning: { mode: "off" }, max_tokens },
+    )
+    if (error) return previous ?? { text, truncated: false, error }
+    if (stop !== "length" || signal?.aborted) return { text, truncated: false }
+    console.warn(`[ingest] the answer stopped at max_tokens=${max_tokens}; asking again with a larger budget`)
+    previous = { text, truncated: true }
+  }
+  return previous ?? { text: "", truncated: false }
+}
 
 // Legacy export kept for backward compatibility with existing diagnostic
 // tests. The live pipeline goes through parseFileBlocks() below, which
@@ -564,6 +616,12 @@ async function autoIngestImpl(
 
   const allWrittenPaths: string[] = []
   const allWriteWarnings: string[] = []
+  /** a stage stayed cut at the token limit even at the largest budget */
+  let outputCut = false
+  const noteCut = (message: string) => {
+    outputCut = true
+    allWriteWarnings.push(message)
+  }
   const allHardFailures: string[] = []
   let lastGeneration = ""
   let lastAnalysis = ""
@@ -577,38 +635,30 @@ async function autoIngestImpl(
     // ── Step 1: Analysis ────────────────────────────────────────
     activity.updateItem(activityId, { detail: `Step 1/2: Analyzing source...${chunkLabel}` })
 
-    let analysis = ""
     const analysisIndex = await selectIndexContext(pp, chunkContent, indexBudget)
 
-    await streamChat(
+    const analysisRun = await streamWithBudget(
       llmConfig,
       [
         { role: "system", content: buildAnalysisPrompt(purpose, analysisIndex, chunkContent) },
         { role: "user", content: `Analyze this source document:\n\n**File:** ${fileName}${folderContext ? `\n**Folder context:** ${folderContext}` : ""}${totalChunks > 1 ? `\n**Part:** ${chunkIdx + 1} of ${totalChunks}` : ""}\n\n---\n\n${chunkContent}` },
       ],
-      {
-        onToken: (token) => { analysis += token },
-        onDone: () => {},
-        onError: (err) => {
-          activity.updateItem(activityId, { status: "error", detail: `Analysis failed${chunkLabel}: ${err.message}` })
-        },
-      },
+      ANALYSIS_BUDGETS,
       signal,
-      { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 8192 },
     )
-
-    const analysisActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
-    if (analysisActivity?.status === "error") {
-      throw new Error(analysisActivity.detail || "Analysis stream failed")
+    if (analysisRun.error) {
+      activity.updateItem(activityId, { status: "error", detail: `Analysis failed${chunkLabel}: ${analysisRun.error.message}` })
+      throw new Error(`Analysis failed${chunkLabel}: ${analysisRun.error.message}`)
     }
+    const analysis = analysisRun.text
+    if (analysisRun.truncated) noteCut(`Analysis${chunkLabel} hit the model's token limit; the cut analysis was used.`)
 
     // ── Step 2: Generation ──────────────────────────────────────
     activity.updateItem(activityId, { detail: `Step 2/2: Generating wiki pages...${chunkLabel}` })
 
-    let generation = ""
     const generationIndex = await selectIndexContext(pp, `${chunkContent}\n${analysis}`, indexBudget)
 
-    await streamChat(
+    const generationRun = await streamWithBudget(
       llmConfig,
       [
         { role: "system", content: buildGenerationPrompt(schema, purpose, generationIndex, fileName, overview, chunkContent) },
@@ -643,21 +693,15 @@ async function autoIngestImpl(
           ].join("\n"),
         },
       ],
-      {
-        onToken: (token) => { generation += token },
-        onDone: () => {},
-        onError: (err) => {
-          activity.updateItem(activityId, { status: "error", detail: `Generation failed${chunkLabel}: ${err.message}` })
-        },
-      },
+      GENERATION_BUDGETS,
       signal,
-      { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 16384 },
     )
-
-    const generationActivity = useActivityStore.getState().items.find((i) => i.id === activityId)
-    if (generationActivity?.status === "error") {
-      throw new Error(generationActivity.detail || "Generation stream failed")
+    if (generationRun.error) {
+      activity.updateItem(activityId, { status: "error", detail: `Generation failed${chunkLabel}: ${generationRun.error.message}` })
+      throw new Error(`Generation failed${chunkLabel}: ${generationRun.error.message}`)
     }
+    const generation = generationRun.text
+    if (generationRun.truncated) noteCut(`Generation${chunkLabel} hit the model's token limit; the last page was dropped.`)
 
     lastGeneration = generation
     lastAnalysis = analysis
@@ -803,9 +847,9 @@ async function autoIngestImpl(
     await refreshWikiIndex(pp)
   }
 
-  const detail = writtenPaths.length > 0
+  const detail = (writtenPaths.length > 0
     ? `${writtenPaths.length} files written${reviewItems.length > 0 ? `, ${reviewItems.length} review item(s)` : ""}`
-    : "No files generated"
+    : "No files generated") + (outputCut ? ` — output cut at the model's token limit` : "")
 
   activity.updateItem(activityId, {
     status: writtenPaths.length > 0 ? "done" : "error",
@@ -1098,12 +1142,16 @@ export function buildAnalysisPrompt(purpose: string, index: string, sourceConten
 export function buildGenerationPrompt(schema: string, purpose: string, index: string, sourceFileName: string, overview?: string, sourceContent: string = ""): string {
   // Use original filename (without extension) as the source summary page name
   const sourceBaseName = sourceFileName.replace(/\.[^.]+$/, "")
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
 
   return [
     "You are a wiki maintainer. Based on the analysis provided, generate wiki files.",
     "Do not output chain-of-thought, hidden reasoning, or explanatory preamble. Reason internally and output only the requested FILE/REVIEW blocks.",
     "",
     languageRule(sourceContent),
+    "",
+    `Today's date is ${today}.`,
     "",
     `## IMPORTANT: Source File`,
     `The original source file is: **${sourceFileName}**`,
@@ -1134,7 +1182,7 @@ export function buildGenerationPrompt(schema: string, purpose: string, index: st
     "Required fields and types:",
     "  • type     — one of: source | entity | concept | comparison | query | synthesis",
     "  • title    — string (quote it if it contains a colon, e.g. `title: \"Foo: Bar\"`)",
-    "  • created  — date in YYYY-MM-DD form (no quotes)",
+    `  • created  — date in YYYY-MM-DD form (no quotes). Today's date is ${today}: use it for new pages`,
     "  • updated  — same as created",
     "  • tags     — array of bare strings: `tags: [microbiology, ai]`",
     "  • related  — array of bare wiki page slugs: `related: [foo, bar-baz]`. Do NOT include",
@@ -1147,8 +1195,8 @@ export function buildGenerationPrompt(schema: string, purpose: string, index: st
     "    ---",
     "    type: entity",
     "    title: Example Entity",
-    "    created: 2026-04-29",
-    "    updated: 2026-04-29",
+    `    created: ${today}`,
+    `    updated: ${today}`,
     "    tags: [example, demo]",
     "    related: [related-slug-1, related-slug-2]",
     `    sources: ["${sourceFileName}"]`,

@@ -1,9 +1,24 @@
-import { describe, it, expect, beforeEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { buildAnalysisPrompt, buildGenerationPrompt } from "./ingest"
 import { useWikiStore } from "@/stores/wiki-store"
 
 beforeEach(() => {
   useWikiStore.getState().setOutputLanguage("auto")
+})
+
+describe("buildGenerationPrompt dates", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("tells the model today's date and uses it in the example front matter", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 22, 9, 30))
+    const prompt = buildGenerationPrompt("", "", "", "f.pdf")
+    expect(prompt).toContain("Today's date is 2026-10-22")
+    expect(prompt).toContain("created: 2026-10-22")
+    expect(prompt).not.toContain("2026-04-29")
+  })
 })
 
 describe("buildAnalysisPrompt language directive", () => {

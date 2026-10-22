@@ -2,6 +2,7 @@ import type { LlmConfig } from "@/stores/wiki-store"
 import { getProviderConfig, type RequestOverrides } from "./llm-providers"
 import { getHttpFetch, isFetchNetworkError } from "./tauri-fetch"
 import { countReasoningCharsInLine, extractReasoningTextFromLine } from "./reasoning-detector"
+import { stopReasonFromLine, type StopReason } from "./stop-reason"
 
 export type { ChatMessage, RequestOverrides } from "./llm-providers"
 export { isFetchNetworkError } from "./tauri-fetch"
@@ -9,6 +10,8 @@ export { isFetchNetworkError } from "./tauri-fetch"
 export interface StreamCallbacks {
   onToken: (token: string) => void
   onReasoningToken?: (token: string) => void
+  /** Why the answer ended, once the endpoint says so ("length" = max_tokens). */
+  onStopReason?: (reason: StopReason) => void
   onDone: () => void
   onError: (error: Error) => void
 }
@@ -186,6 +189,8 @@ export async function streamChat(
     for (const part of reasoningParts) {
       callbacks.onReasoningToken?.(part)
     }
+    const stop = stopReasonFromLine(line)
+    if (stop) callbacks.onStopReason?.(stop)
   }
 
   try {
